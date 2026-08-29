@@ -52,7 +52,7 @@ qemu: builder-up
 	docker exec -w /build $(BUILDER) emconfigure /qemu/configure \
 	  --static --cpu=wasm64 --target-list=x86_64-softmmu \
 	  --cross-prefix= --without-default-features \
-	  --enable-system --with-coroutine=fiber --enable-virtfs
+	  --enable-system --enable-tcg-interpreter --disable-tools --enable-virtfs
 	docker exec -w /build $(BUILDER) emmake make -j$$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4) qemu-system-x86_64
 	mkdir -p $(HTDOCS)
 	docker cp $(BUILDER):/build/qemu-system-x86_64 $(HTDOCS)/out.js

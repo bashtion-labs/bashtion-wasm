@@ -118,6 +118,15 @@ must send `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: require-corp`. On hosts that cannot set headers, ship
 `coi-serviceworker.js`.
 
+## Performance note: upstream wasm is TCI (interpreter), not JIT
+
+Upstream requires `--enable-tcg-interpreter` on wasm hosts: the TB-to-wasm TCG **JIT**
+backend exists only in the ktock fork (`tcg/wasm32`) and was never merged upstream, so
+upstream wasm execution is TCI — QEMU's bytecode interpreter, several times slower than a
+TCG JIT. Whether an interactive guest is usable under TCI-in-wasm is an open question the
+first boot measurement must answer. If it is not, the options are (a) carrying the fork's
+JIT backend as a patch series on upstream, or (b) building from the fork.
+
 ## Status
 
 Early. The build pipeline is scaffolded against upstream v11.1.1; the wasm build and the

@@ -43,9 +43,12 @@ jobs:
           platforms: linux/amd64
           push: false
           load: true
-          tags: bashtion-toolchain:ci
+          tags: bashtion-toolchain:base
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Add xterm-pty to toolchain
+        run: docker build --build-arg BASE=bashtion-toolchain:base -t bashtion-toolchain:ci -f web/toolchain-extra.dockerfile web/
 
       - name: Apply QEMU patches to a working copy
         run: |
@@ -64,17 +67,37 @@ jobs:
           docker exec -w /build bashtion-build emconfigure /qemu/configure \
             --static --cpu=wasm64 --target-list=x86_64-softmmu \
             --cross-prefix= --without-default-features \
-            --enable-system --enable-tcg-interpreter --disable-tools --enable-virtfs
-          docker exec -w /build bashtion-build emmake make -j"$(nproc)" qemu-system-x86_64
+            --enable-system --enable-tcg-interpreter --disable-tools --enable-virtfs \
+            --extra-ldflags="--js-library=/build/node_modules/xterm-pty/emscripten-pty.js"
+          docker exec -w /build bashtion-build emmake make -j"$(nproc)"
+          docker exec bashtion-build sh -c 'ls -la /build/qemu-system-x86_64*'
           mkdir -p out/htdocs
-          docker cp bashtion-build:/build/qemu-system-x86_64 out/htdocs/out.js
-          docker cp bashtion-build:/build/qemu-system-x86_64.wasm out/htdocs/ || true
-          docker cp bashtion-build:/build/qemu-system-x86_64.worker.js out/htdocs/ || true
+          docker exec bashtion-build sh -c 'cd /build && tar cf - qemu-system-x86_64*' | tar xf - -C out/htdocs
+          mv out/htdocs/qemu-system-x86_64 out/htdocs/out.js 2>/dev/null || true
           docker rm -f bashtion-build
 
       - uses: actions/upload-artifact@v4
         with:
           name: qemu-wasm64
           path: out/htdocs/
+          retention-days: 14
+
+  guest-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # mmdebstrap --mode=root needs CAP_SYS_ADMIN-ish privileges for chroot
+      # mounts; plain docker build provides them on GitHub runners.
+      - name: Build guest image
+        run: make image
+
+      - name: Show manifest
+        run: cat out/image/manifest.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guest-image
+          path: out/image/
           retention-days: 14
 

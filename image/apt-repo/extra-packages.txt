@@ -1,0 +1,7 @@
+# Packages deliberately NOT preinstalled, served from the in-image offline apt
+# repository so `apt install` works with no network. Dependency closure is
+# computed at build time (apt-get install --print-uris).
+cowsay
+sl
+figlet
+tree

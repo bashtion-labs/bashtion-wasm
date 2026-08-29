@@ -25,7 +25,9 @@ toolchain:
 	  echo "applying $$p"; patch -p1 -d $(OUT)/toolchain < "$$p" || exit 1; \
 	done
 	docker build $(if $(EMSDK_VERSION),--build-arg EMSDK_VERSION_QEMU=$(EMSDK_VERSION)) \
-	  -t $(TOOLCHAIN_TAG) - < $(OUT)/toolchain/tests/docker/dockerfiles/emsdk-wasm64-cross.docker
+	  -t $(TOOLCHAIN_TAG)-base - < $(OUT)/toolchain/tests/docker/dockerfiles/emsdk-wasm64-cross.docker
+	docker build --build-arg BASE=$(TOOLCHAIN_TAG)-base -t $(TOOLCHAIN_TAG) \
+	  -f web/toolchain-extra.dockerfile web/
 
 ## Long-lived build container with the QEMU source (patched copy) mounted.
 ## Patches are applied to a copy in $(OUT)/qemu-src so the submodule stays pristine.
@@ -52,12 +54,13 @@ qemu: builder-up
 	docker exec -w /build $(BUILDER) emconfigure /qemu/configure \
 	  --static --cpu=wasm64 --target-list=x86_64-softmmu \
 	  --cross-prefix= --without-default-features \
-	  --enable-system --enable-tcg-interpreter --disable-tools --enable-virtfs
-	docker exec -w /build $(BUILDER) emmake make -j$$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4) qemu-system-x86_64
+	  --enable-system --enable-tcg-interpreter --disable-tools --enable-virtfs \
+	  --extra-ldflags="--js-library=/build/node_modules/xterm-pty/emscripten-pty.js"
+	docker exec -w /build $(BUILDER) emmake make -j$$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
+	docker exec $(BUILDER) sh -c 'ls -la /build/qemu-system-x86_64*'
 	mkdir -p $(HTDOCS)
-	docker cp $(BUILDER):/build/qemu-system-x86_64 $(HTDOCS)/out.js
-	-docker cp $(BUILDER):/build/qemu-system-x86_64.wasm $(HTDOCS)/
-	-docker cp $(BUILDER):/build/qemu-system-x86_64.worker.js $(HTDOCS)/
+	docker exec $(BUILDER) sh -c 'cd /build && tar cf - qemu-system-x86_64*' | tar xf - -C $(HTDOCS)
+	mv $(HTDOCS)/qemu-system-x86_64 $(HTDOCS)/out.js 2>/dev/null || true
 
 ## Guest image: rootfs + kernel + initramfs (see image/).
 image:

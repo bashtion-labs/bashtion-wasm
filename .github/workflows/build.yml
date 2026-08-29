@@ -64,7 +64,7 @@ jobs:
           docker exec -w /build bashtion-build emconfigure /qemu/configure \
             --static --cpu=wasm64 --target-list=x86_64-softmmu \
             --cross-prefix= --without-default-features \
-            --enable-system --with-coroutine=fiber --enable-virtfs
+            --enable-system --enable-tcg-interpreter --disable-tools --enable-virtfs
           docker exec -w /build bashtion-build emmake make -j"$(nproc)" qemu-system-x86_64
           mkdir -p out/htdocs
           docker cp bashtion-build:/build/qemu-system-x86_64 out/htdocs/out.js

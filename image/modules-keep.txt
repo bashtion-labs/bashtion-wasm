@@ -1,0 +1,41 @@
+# Modules kept in the guest (plus their modules.dep closure); everything else
+# in /lib/modules is pruned at build time. A name missing as both module and
+# builtin fails the build.
+# storage administration
+dm_mod
+dm_snapshot
+dm_mirror
+dm_thin_pool
+dm_crypt
+dm_zero
+quota_v2
+quota_tree
+# shared home directory
+9p
+9pnet_virtio
+# firewalling
+ip_tables
+ip6_tables
+iptable_filter
+ip6table_filter
+iptable_mangle
+nf_conntrack
+nf_tables
+xt_conntrack
+xt_limit
+xt_multiport
+xt_addrtype
+xt_comment
+xt_recent
+xt_LOG
+xt_MASQUERADE
+ipt_REJECT
+nf_reject_ipv4
+# misc the labs touch
+overlay
+autofs4
+binfmt_misc
+virtio_rng
+unix_diag
+netlink_diag
+loop

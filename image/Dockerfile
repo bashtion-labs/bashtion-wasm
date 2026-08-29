@@ -63,6 +63,12 @@ RUN getcap /rootfs/usr/bin/ping | grep -q cap_net_raw || \
 # the running kernel truthfully, which package-tooling exercises rely on.
 # the chroot needs DNS only during build; the file is removed again below
 RUN rm -f /rootfs/etc/resolv.conf && cp /etc/resolv.conf /rootfs/etc/resolv.conf
+# persist the doc/man excludes for every later in-chroot install too
+RUN mkdir -p /rootfs/etc/dpkg/dpkg.cfg.d && printf '%s\n' \
+      'path-exclude=/usr/share/doc/*' \
+      'path-include=/usr/share/doc/*/copyright' \
+      'path-exclude=/usr/share/man/??*' \
+      > /rootfs/etc/dpkg/dpkg.cfg.d/90-bashtion-trim
 RUN chroot /rootfs apt-get update && \
     chroot /rootfs apt-get install -y --no-install-recommends linux-image-virtual
 RUN KVER=$(ls /rootfs/lib/modules | sort -V | tail -1) && echo "KVER=$KVER" && \
@@ -72,6 +78,60 @@ RUN KVER=$(ls /rootfs/lib/modules | sort -V | tail -1) && echo "KVER=$KVER" && \
 # kernel out for QEMU's -kernel
 RUN mkdir -p /out && cp /rootfs/boot/vmlinuz-$(cat /kver) /out/vmlinuz && \
     cp /rootfs/boot/config-$(cat /kver) /out/kernel-config
+
+# prune /lib/modules to the required set plus its dependency closure.
+# linux-modules-extra alone unpacks to hundreds of MB; the guest needs a
+# fraction of it. modules.dep lines are "mod.ko: dep1.ko dep2.ko ...".
+COPY modules-keep.txt /modules-keep.txt
+RUN KVER=$(cat /kver); MODDIR=/rootfs/lib/modules/$KVER; \
+    python3 - "$MODDIR" <<'PYEOF'
+import os, sys
+moddir = sys.argv[1]
+deps = {}
+for line in open(os.path.join(moddir, 'modules.dep')):
+    head, _, rest = line.partition(':')
+    deps[head.strip()] = rest.split()
+def norm(name):
+    n = name.strip().replace('-', '_')
+    for path in deps:
+        base = os.path.basename(path)
+        for ext in ('.ko', '.ko.zst', '.ko.xz'):
+            if base.endswith(ext) and base[:-len(ext)].replace('-', '_') == n:
+                return path
+    return None
+keep = set()
+missing = []
+for want in open('/modules-keep.txt'):
+    want = want.split('#')[0].strip()
+    if not want:
+        continue
+    p = norm(want)
+    if p is None:
+        missing.append(want)
+        continue
+    stack = [p]
+    while stack:
+        cur = stack.pop()
+        if cur in keep:
+            continue
+        keep.add(cur)
+        stack.extend(deps.get(cur, []))
+builtin = open(os.path.join(moddir, 'modules.builtin')).read().replace('-', '_')
+really_missing = [m for m in missing if (m + '.ko') not in builtin]
+if really_missing:
+    raise SystemExit('FATAL: not found as module or builtin: %r' % really_missing)
+removed = kept_bytes = 0
+for root, _, files in os.walk(os.path.join(moddir, 'kernel')):
+    for f in files:
+        full = os.path.join(root, f)
+        rel = os.path.relpath(full, moddir)
+        if rel in keep:
+            kept_bytes += os.path.getsize(full)
+        else:
+            os.unlink(full); removed += 1
+print('kept %d modules (%.1f MB), removed %d' % (len(keep), kept_bytes / 1e6, removed))
+PYEOF
+RUN KVER=$(cat /kver); chroot /rootfs depmod "$KVER" && du -sh /rootfs/lib/modules
 
 # hard assertions: every module a required capability depends on must exist as
 # a .ko for this kernel or be built in - a miss fails the build, not the user.
@@ -140,6 +200,9 @@ RUN rm -rf /rootfs/usr/share/vim/vim*/doc /rootfs/usr/share/vim/vim*/tutor \
            /rootfs/var/cache/apt/archives/*.deb /rootfs/var/lib/apt/lists/*_Packages* || true; \
     du -sh /rootfs
 
+# size evidence in the build log: top consumers before the image is cut
+RUN du -x --max-depth=2 --block-size=1M /rootfs 2>/dev/null | sort -rn | head -25
+
 # ------------------------------------------------------------- disk images
 # root: measured content + headroom for user-created files
 RUN size_kb=$(du -s --block-size=1024 /rootfs | cut -f1); \
@@ -150,8 +213,11 @@ RUN size_kb=$(du -s --block-size=1024 /rootfs | cut -f1); \
 # verify the capability xattr survived mke2fs -d
 RUN debugfs -R 'ea_list /usr/bin/ping' /out/rootfs.ext4 2>/dev/null | \
       grep -q security.capability || { echo "FATAL: cap xattr lost in ext4"; exit 1; }
-# practice disk: raw, empty, unpartitioned - partitioning it is the exercise
-RUN dd if=/dev/zero of=/out/vdb.img bs=1M count=0 seek=256
+# practice disk: qcow2, empty, unpartitioned - partitioning it is the
+# exercise. qcow2 so the browser holds ~200 KB, growing only as written,
+# instead of 256 MB of raw zeros resident in the wasm heap.
+RUN apt-get install -y --no-install-recommends qemu-utils >/dev/null && \
+    qemu-img create -f qcow2 /out/vdb.qcow2 1G && ls -la /out/vdb.qcow2
 # manifest
 ARG SNAPSHOT
 RUN python3 - <<PYEOF

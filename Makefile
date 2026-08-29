@@ -86,7 +86,7 @@ pack:
 	   $(OUT)/pack-rom/
 	cp $(OUT)/image/vmlinuz $(OUT)/pack-kernel/
 	cp $(OUT)/image/rootfs.ext4 $(OUT)/pack-rootfs/
-	cp $(OUT)/image/vdb.img $(OUT)/pack-lab/
+	cp $(OUT)/image/vdb.qcow2 $(OUT)/pack-lab/
 	for n in rom kernel rootfs lab; do \
 	  docker cp $(OUT)/pack-$$n $(BUILDER):/ && \
 	  docker exec -w /build $(BUILDER) sh -c \

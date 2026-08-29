@@ -1,0 +1,62 @@
+# Guest package set.
+# One package per line; blank lines and # comments are ignored by the image build.
+# Grouped by the capability each set provides.
+
+# --- Storage administration: LVM, quotas, filesystem tools ---
+lvm2
+quota
+acl
+
+# --- Init, scheduling, logging ---
+sudo
+cron
+at
+rsyslog
+logrotate
+
+# --- Process and system inspection ---
+procps
+psmisc
+lsof
+htop
+sysstat
+
+# --- Networking ---
+iproute2
+net-tools
+traceroute
+openssh-client
+openssh-server
+
+# --- Firewalling ---
+ufw
+iptables
+
+# --- Documentation ---
+man-db
+manpages
+info
+
+# --- Editors, pagers, file and text inspection ---
+vim
+nano
+less
+tree
+diffutils
+binutils
+bsdextrautils
+plocate
+
+# --- Package-format tooling ---
+rpm
+cpio
+
+# --- Runtime for local service tests ---
+python3
+curl
+
+# --- Printing subsystem ---
+cups
+
+# --- Misc ---
+cowsay

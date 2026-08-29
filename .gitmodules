@@ -1,0 +1,5 @@
+[submodule "third_party/qemu"]
+	path = third_party/qemu
+	url = https://github.com/qemu/qemu.git
+	branch = v11.1.1
+	shallow = true

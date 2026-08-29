@@ -41,7 +41,7 @@ $(OUT)/qemu-src/.patched: patches/qemu/*.patch
 builder-up: $(OUT)/qemu-src/.patched
 	@docker inspect $(BUILDER) >/dev/null 2>&1 || \
 	  docker run --rm -d --name $(BUILDER) \
-	    -v $(CURDIR)/$(OUT)/qemu-src:/qemu/:ro $(TOOLCHAIN_TAG) sleep infinity
+	    -v $(CURDIR)/$(OUT)/qemu-src:/qemu/ $(TOOLCHAIN_TAG) sleep infinity
 
 builder-down:
 	-docker rm -f $(BUILDER)

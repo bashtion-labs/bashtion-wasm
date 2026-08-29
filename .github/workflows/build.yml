@@ -59,7 +59,7 @@ jobs:
       - name: Configure and build qemu-system-x86_64 (wasm64)
         run: |
           docker run --rm -d --name bashtion-build \
-            -v "$PWD/out/qemu-src:/qemu/:ro" \
+            -v "$PWD/out/qemu-src:/qemu/" \
             bashtion-toolchain:ci sleep infinity
           docker exec -w /build bashtion-build emconfigure /qemu/configure \
             --static --cpu=wasm64 --target-list=x86_64-softmmu \

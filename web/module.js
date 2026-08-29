@@ -17,7 +17,7 @@ globalThis.Module = {
         '-drive', 'id=root,file=/pack-rootfs/rootfs.ext4,format=raw,if=none',
         '-device', 'virtio-blk-pci,drive=root',
         // second, empty disk for storage-administration exercises
-        '-drive', 'id=lab,file=/pack-lab/vdb.img,format=raw,if=none',
+        '-drive', 'id=lab,file=/pack-lab/vdb.qcow2,format=qcow2,if=none',
         '-device', 'virtio-blk-pci,drive=lab',
         // 9p share backing the persistent directory (mount tag share0;
         // fstab inside the guest mounts it at /home/user/persist)

@@ -61,7 +61,9 @@ RUN getcap /rootfs/usr/bin/ping | grep -q cap_net_raw || \
 # mmdebstrap wrote into sources.list. The snapshot timestamp is the version
 # pin - no guessed kernel ABI to go stale. dpkg/apt inside the guest report
 # the running kernel truthfully, which package-tooling exercises rely on.
-RUN chroot /rootfs apt-get update -qq && \
+# the chroot needs DNS only during build; the file is removed again below
+RUN rm -f /rootfs/etc/resolv.conf && cp /etc/resolv.conf /rootfs/etc/resolv.conf
+RUN chroot /rootfs apt-get update && \
     chroot /rootfs apt-get install -y --no-install-recommends linux-image-virtual
 RUN KVER=$(ls /rootfs/lib/modules | sort -V | tail -1) && echo "KVER=$KVER" && \
     chroot /rootfs apt-get install -y --no-install-recommends \
@@ -132,6 +134,7 @@ RUN set -e; mkdir -p /rootfs/srv/apt; \
     chroot /rootfs apt-get update -qq || true
 
 # --------------------------------------------------------------- trim pass
+RUN rm -f /rootfs/etc/resolv.conf && touch /rootfs/etc/resolv.conf
 RUN rm -rf /rootfs/usr/share/vim/vim*/doc /rootfs/usr/share/vim/vim*/tutor \
            /rootfs/usr/share/zoneinfo/right /rootfs/usr/share/zoneinfo/posix \
            /rootfs/var/cache/apt/archives/*.deb /rootfs/var/lib/apt/lists/*_Packages* || true; \

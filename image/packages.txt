@@ -22,6 +22,9 @@ htop
 sysstat
 
 # --- Networking ---
+# ca-certificates: required for the build's own https apt fetches inside the
+# chroot (Recommends are globally off, so nothing else pulls it in)
+ca-certificates
 iproute2
 net-tools
 traceroute

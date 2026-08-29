@@ -72,6 +72,30 @@ image:
 snapshot:
 	./snapshot/make-snapshot.sh
 
+## Package guest assets + page into $(HTDOCS). Requires: make qemu, make image.
+pack: 
+	mkdir -p $(HTDOCS)/vendor
+	# vendored terminal libs from the toolchain image (no CDN at runtime)
+	docker cp $(BUILDER):/build/node_modules/@xterm/xterm/lib/xterm.js $(HTDOCS)/vendor/
+	docker cp $(BUILDER):/build/node_modules/@xterm/xterm/css/xterm.css $(HTDOCS)/vendor/
+	docker cp $(BUILDER):/build/node_modules/xterm-pty/index.js $(HTDOCS)/vendor/xterm-pty.js
+	# per-asset bundles so the browser caches kernel/rom independently of rootfs
+	mkdir -p $(OUT)/pack-rom $(OUT)/pack-kernel $(OUT)/pack-rootfs $(OUT)/pack-lab
+	cp third_party/qemu/pc-bios/bios-256k.bin third_party/qemu/pc-bios/vgabios-stdvga.bin \
+	   third_party/qemu/pc-bios/kvmvapic.bin third_party/qemu/pc-bios/linuxboot_dma.bin \
+	   $(OUT)/pack-rom/
+	cp $(OUT)/image/vmlinuz $(OUT)/pack-kernel/
+	cp $(OUT)/image/rootfs.ext4 $(OUT)/pack-rootfs/
+	cp $(OUT)/image/vdb.img $(OUT)/pack-lab/
+	for n in rom kernel rootfs lab; do \
+	  docker cp $(OUT)/pack-$$n $(BUILDER):/ && \
+	  docker exec -w /build $(BUILDER) sh -c \
+	    "python3 /emsdk/upstream/emscripten/tools/file_packager.py load-$$n.data --preload /pack-$$n > load-$$n.js" && \
+	  docker cp $(BUILDER):/build/load-$$n.js $(HTDOCS)/ && \
+	  docker cp $(BUILDER):/build/load-$$n.data $(HTDOCS)/ || exit 1; \
+	done
+	cp web/index.html web/module.js $(HTDOCS)/
+
 ## Serve locally with the COOP/COEP headers cross-origin isolation requires.
 serve:
 	@echo "http://localhost:8088"

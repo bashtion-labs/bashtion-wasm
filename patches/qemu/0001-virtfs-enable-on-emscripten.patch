@@ -1,0 +1,101 @@
+diff --git a/fsdev/meson.build b/fsdev/meson.build
+index 61bc883..2bc9ace 100644
+--- a/fsdev/meson.build
++++ b/fsdev/meson.build
+@@ -5,7 +5,7 @@ fsdev_ss.add(when: ['CONFIG_FSDEV_9P'], if_true: files(
+   '9p-marshal.c',
+   'qemu-fsdev.c',
+ ))
+-if host_os in ['linux', 'darwin', 'freebsd']
++if host_os in ['linux', 'darwin', 'freebsd', 'emscripten']
+   system_ss.add_all(fsdev_ss)
+   stub_ss.add(files('qemu-fsdev-dummy.c'))
+ endif
+diff --git a/hw/9pfs/9p-util-stub.c b/hw/9pfs/9p-util-stub.c
+new file mode 100644
+index 0000000..9ca8f4f
+--- /dev/null
++++ b/hw/9pfs/9p-util-stub.c
+@@ -0,0 +1,54 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * 9p utilities (Emscripten)
++ *
++ * Emscripten's libc ships musl's headers but not its xattr implementation,
++ * and mknodat is unavailable in the browser sandbox. Stub these out: the
++ * 9p "mapped" security models that depend on xattrs are not usable on this
++ * host; security_model=passthrough or none works without them.
++ *
++ * Derived from the equivalent stub in ktock/qemu-wasm (GPL-2.0-or-later).
++ */
++
++#include "qemu/osdep.h"
++#include "9p-util.h"
++
++ssize_t fgetxattr(int fd, const char *name, void *value, size_t size)
++{
++    errno = ENOTSUP;
++    return -1;
++}
++
++ssize_t fgetxattrat_nofollow(int dirfd, const char *path, const char *name,
++                             void *value, size_t size)
++{
++    errno = ENOTSUP;
++    return -1;
++}
++
++int fsetxattrat_nofollow(int dirfd, const char *path, const char *name,
++                         void *value, size_t size, int flags)
++{
++    errno = ENOTSUP;
++    return -1;
++}
++
++ssize_t flistxattrat_nofollow(int dirfd, const char *filename,
++                              char *list, size_t size)
++{
++    errno = ENOTSUP;
++    return -1;
++}
++
++ssize_t fremovexattrat_nofollow(int dirfd, const char *filename,
++                                const char *name)
++{
++    errno = ENOTSUP;
++    return -1;
++}
++
++int qemu_mknodat(int dirfd, const char *filename, mode_t mode, dev_t dev)
++{
++    errno = ENOTSUP;
++    return -1;
++}
+diff --git a/hw/9pfs/meson.build b/hw/9pfs/meson.build
+index 91b51af..a2d1899 100644
+--- a/hw/9pfs/meson.build
++++ b/hw/9pfs/meson.build
+@@ -19,6 +19,8 @@ elif host_os == 'freebsd'
+   fs_ss.add(files('9p-util-freebsd.c'))
+ elif host_os == 'linux'
+   fs_ss.add(files('9p-util-linux.c'))
++elif host_os == 'emscripten'
++  fs_ss.add(files('9p-util-stub.c'))
+ endif
+ fs_ss.add(when: 'CONFIG_XEN_BUS', if_true: files('xen-9p-backend.c'))
+ system_ss.add_all(when: 'CONFIG_FSDEV_9P', if_true: fs_ss)
+diff --git a/meson.build b/meson.build
+index 40e3f4e..5626766 100644
+--- a/meson.build
++++ b/meson.build
+@@ -2334,8 +2334,8 @@ have_qemu_vnc = get_option('qemu_vnc') \
+   .allowed()
+ 
+ have_virtfs = get_option('virtfs') \
+-    .require(host_os == 'linux' or host_os == 'darwin' or host_os == 'freebsd',
+-             error_message: 'virtio-9p (virtfs) requires Linux or macOS or FreeBSD') \
++    .require(host_os == 'linux' or host_os == 'darwin' or host_os == 'freebsd' or host_os == 'emscripten',
++             error_message: 'virtio-9p (virtfs) requires Linux, macOS, FreeBSD or Emscripten') \
+     .require(host_os != 'darwin' or cc.has_function('pthread_fchdir_np'),
+              error_message: 'virtio-9p (virtfs) on macOS requires the presence of pthread_fchdir_np') \
+     .require(host_os != 'linux' or libattr.found(),

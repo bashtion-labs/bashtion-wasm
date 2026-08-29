@@ -1,0 +1,25 @@
+# Build output
+/out/
+/dist/
+*.data
+*.wasm
+*.ext2
+*.img
+*.bin
+vm.state
+load-*.js
+
+# Large guest artifacts
+/image/out/
+/snapshot/out/
+
+# Local apt repo contents (regenerated; see image/apt-repo/README.md)
+/image/apt-repo/pool/
+/image/apt-repo/dists/
+
+# OS / editor
+.DS_Store
+*.swp
+
+# Local reference checkout only (design uses upstream third_party/qemu)
+/third_party/qemu-wasm/

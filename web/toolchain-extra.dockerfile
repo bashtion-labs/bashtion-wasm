@@ -4,4 +4,4 @@
 # frontend; the ktock fork proved this exact integration (xterm-pty v0.10.x).
 ARG BASE=bashtion-toolchain:ci
 FROM ${BASE}
-RUN cd /build && npm i xterm-pty@v0.10.1
+RUN cd /build && npm i xterm-pty@v0.10.1 @xterm/xterm@5.5.0

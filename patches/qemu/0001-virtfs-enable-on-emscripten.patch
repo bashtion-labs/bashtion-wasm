@@ -26,10 +26,10 @@ index 61bc883..2bc9ace 100644
  endif
 diff --git a/hw/9pfs/9p-util-stub.c b/hw/9pfs/9p-util-stub.c
 new file mode 100644
-index 0000000..9ca8f4f
+index 0000000..a79f294
 --- /dev/null
 +++ b/hw/9pfs/9p-util-stub.c
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,56 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +/*
 + * 9p utilities (Emscripten)
@@ -44,6 +44,8 @@ index 0000000..9ca8f4f
 +
 +#include "qemu/osdep.h"
 +#include "9p-util.h"
++
++ssize_t fgetxattr(int fd, const char *name, void *value, size_t size);
 +
 +ssize_t fgetxattr(int fd, const char *name, void *value, size_t size)
 +{
@@ -84,6 +86,38 @@ index 0000000..9ca8f4f
 +    errno = ENOTSUP;
 +    return -1;
 +}
+diff --git a/hw/9pfs/9p-util.h b/hw/9pfs/9p-util.h
+index 8dfa803..7433eaf 100644
+--- a/hw/9pfs/9p-util.h
++++ b/hw/9pfs/9p-util.h
+@@ -71,8 +71,8 @@ static inline uint64_t host_dev_to_dotl_dev(dev_t dev)
+ 
+ /* Translates errno from host -> Linux if needed */
+ static inline int errno_to_dotl(int err) {
+-#if defined(CONFIG_LINUX)
+-    /* nothing to translate (Linux -> Linux) */
++#if defined(CONFIG_LINUX) || defined(EMSCRIPTEN)
++    /* nothing to translate (Linux -> Linux; Emscripten's musl uses Linux errnos) */
+ #elif defined(CONFIG_DARWIN) || defined(CONFIG_FREEBSD)
+     /*
+      * translation mandatory for non-Linux hosts
+diff --git a/hw/9pfs/9p.c b/hw/9pfs/9p.c
+index 4764d9d..dee24b3 100644
+--- a/hw/9pfs/9p.c
++++ b/hw/9pfs/9p.c
+@@ -4189,6 +4189,12 @@ out_nofid:
+  * So, a limit of 64k seems reasonable here too.
+  */
+ #define P9_XATTR_SIZE_MAX 65536
++#elif defined(EMSCRIPTEN)
++/*
++ * Emscripten has no kernel uapi headers (no <linux/limits.h>); mirror the
++ * Linux guest limit like the Darwin and FreeBSD branches above.
++ */
++#define P9_XATTR_SIZE_MAX 65536
+ #else
+ #error Missing definition for P9_XATTR_SIZE_MAX for this host system
+ #endif
 diff --git a/hw/9pfs/meson.build b/hw/9pfs/meson.build
 index 91b51af..a2d1899 100644
 --- a/hw/9pfs/meson.build

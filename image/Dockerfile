@@ -57,29 +57,31 @@ RUN getcap /rootfs/usr/bin/ping | grep -q cap_net_raw || \
       { echo "FATAL: cap_net_raw lost in transit"; exit 1; }
 
 # ----------------------------------------------------------------- kernel
-# Installed through dpkg --root so the package database knows about it.
-ARG KABI=6.8.0-79
-ARG KVER=${KABI}-generic
-RUN chroot_apt() { :; }; \
-    for p in linux-image-unsigned-${KVER} linux-modules-${KVER} linux-modules-extra-${KVER}; do \
-      url=$(cd /rootfs && chroot . /bin/sh -c "apt-get update -qq 2>/dev/null; apt-get download --print-uris -qq $p" | cut -d\' -f2); \
-      echo "fetch $p <- $url"; curl -fsSL -o /tmp/$p.deb "$url" || exit 1; \
-    done; \
-    dpkg --root=/rootfs -i /tmp/linux-image-unsigned-${KVER}.deb \
-        /tmp/linux-modules-${KVER}.deb /tmp/linux-modules-extra-${KVER}.deb && \
-    rm /tmp/*.deb
-# kernel out for QEMU's -kernel; keep /boot copy so update-alternatives paths hold
-RUN mkdir -p /out && cp /rootfs/boot/vmlinuz-${KVER} /out/vmlinuz
+# Installed through apt INSIDE the chroot, against the pinned snapshot mirror
+# mmdebstrap wrote into sources.list. The snapshot timestamp is the version
+# pin - no guessed kernel ABI to go stale. dpkg/apt inside the guest report
+# the running kernel truthfully, which package-tooling exercises rely on.
+RUN chroot /rootfs apt-get update -qq && \
+    chroot /rootfs apt-get install -y --no-install-recommends linux-image-virtual
+RUN KVER=$(ls /rootfs/lib/modules | sort -V | tail -1) && echo "KVER=$KVER" && \
+    chroot /rootfs apt-get install -y --no-install-recommends \
+      linux-modules-extra-${KVER} && \
+    echo "$KVER" > /kver
+# kernel out for QEMU's -kernel
+RUN mkdir -p /out && cp /rootfs/boot/vmlinuz-$(cat /kver) /out/vmlinuz && \
+    cp /rootfs/boot/config-$(cat /kver) /out/kernel-config
 
-# hard assertions: every module a capability depends on must resolve
-RUN for m in dm-mod dm-snapshot dm-mirror dm-thin-pool quota_v2 quota_tree \
+# hard assertions: every module a required capability depends on must exist as
+# a .ko for this kernel or be built in - a miss fails the build, not the user.
+RUN KVER=$(cat /kver); ok=1; \
+    for m in dm_mod dm_snapshot dm_mirror dm_thin_pool quota_v2 quota_tree \
              9p 9pnet_virtio ip_tables iptable_filter nf_conntrack \
              xt_conntrack xt_limit ipt_REJECT overlay virtio_blk virtio_pci; do \
-      modinfo -b /rootfs -k ${KVER} $m >/dev/null 2>&1 || \
-      grep -qE "(=y)" /rootfs/boot/config-${KVER} 2>/dev/null && \
-      grep -q "CONFIG_.*$(echo $m | tr 'a-z-' 'A-Z_').*=y" /rootfs/boot/config-${KVER} || \
-      modinfo -b /rootfs -k ${KVER} $m >/dev/null || { echo "FATAL: $m unavailable"; exit 1; }; \
-    done
+      if modinfo -b /rootfs -k "$KVER" "$m" >/dev/null 2>&1; then continue; fi; \
+      if grep -qE "(/|^)$(echo $m | tr _ -)\.ko" /rootfs/lib/modules/$KVER/modules.builtin 2>/dev/null || \
+         grep -qE "(/|^)${m}\.ko" /rootfs/lib/modules/$KVER/modules.builtin 2>/dev/null; then continue; fi; \
+      echo "FATAL: $m unavailable for $KVER"; ok=0; \
+    done; [ $ok = 1 ]
 
 # ------------------------------------------------------- guest customization
 COPY seed/ /seed/
@@ -149,7 +151,6 @@ RUN debugfs -R 'ea_list /usr/bin/ping' /out/rootfs.ext4 2>/dev/null | \
 RUN dd if=/dev/zero of=/out/vdb.img bs=1M count=0 seek=256
 # manifest
 ARG SNAPSHOT
-ARG KABI
 RUN python3 - <<PYEOF
 import json, hashlib, os
 def sha(p):
@@ -158,7 +159,8 @@ def sha(p):
         for c in iter(lambda: f.read(1 << 20), b''): h.update(c)
     return h.hexdigest()
 json.dump({
-    'suite': '${SUITE}', 'snapshot': '${SNAPSHOT}', 'kernel': '${KABI}-generic',
+    'suite': '${SUITE}', 'snapshot': '${SNAPSHOT}',
+    'kernel': open('/kver').read().strip(),
     'artifacts': {p: {'bytes': os.path.getsize('/out/' + p), 'sha256': sha('/out/' + p)}
                   for p in os.listdir('/out')},
 }, open('/out/manifest.json', 'w'), indent=1)

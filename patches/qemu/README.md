@@ -16,6 +16,10 @@ Three one-line build changes plus one new file:
 - `fsdev/meson.build` — add `emscripten` to the OS list
 - `hw/9pfs/meson.build` — on emscripten, build `9p-util-stub.c` in place of the
   per-OS xattr implementations
+- `fsdev/file-op-9p.h` — the `struct statfs` include (`<sys/vfs.h>`) is gated on
+  `CONFIG_LINUX`; extended to `EMSCRIPTEN`, whose musl headers provide the same
+  definition. Without it `9p-synth.c` fails with "incomplete definition of type
+  'struct statfs'" (found by the first real CI compile).
 - `hw/9pfs/9p-util-stub.c` (new) — Emscripten's libc ships musl's *headers* but not its
   xattr implementation, and `mknodat` is unavailable in the browser sandbox. The stub
   returns `ENOTSUP` for the xattr family and `qemu_mknodat`, which disables the 9p

@@ -1,3 +1,16 @@
+diff --git a/fsdev/file-op-9p.h b/fsdev/file-op-9p.h
+index 1d93114..52967aa 100644
+--- a/fsdev/file-op-9p.h
++++ b/fsdev/file-op-9p.h
+@@ -19,7 +19,7 @@
+ #include "qemu-fsdev-throttle.h"
+ #include "p9array.h"
+ 
+-#ifdef CONFIG_LINUX
++#if defined(CONFIG_LINUX) || defined(EMSCRIPTEN)
+ # include <sys/vfs.h>
+ #elif defined(CONFIG_DARWIN) || defined(CONFIG_FREEBSD)
+ # include <sys/param.h>
 diff --git a/fsdev/meson.build b/fsdev/meson.build
 index 61bc883..2bc9ace 100644
 --- a/fsdev/meson.build

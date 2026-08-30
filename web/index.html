@@ -14,16 +14,16 @@
   <body>
     <div id="status">loading…</div>
     <div id="controls" style="position:fixed;top:4px;right:8px;font:12px system-ui">
-      <button id="saveBtn" title="Sync persistent directory to browser storage">Save</button>
-      <button id="exportBtn" title="Download persistent directory as a .tar">Download my work</button>
-      <label style="color:#9a9a9a"><input type="file" id="importInp" hidden>
-        <button onclick="document.getElementById('importInp').click()">Restore from file</button></label>
+      <span id="sfsStatus" style="color:#9a9a9a;margin-right:8px"></span>
+      <button id="saveBtn" title="Save your home directory into this browser">Save work</button>
+      <button id="exportBtn" title="Download your home directory as a file you keep">Download my work</button>
+      <label><input type="file" id="importInp" hidden>
+        <button onclick="document.getElementById('importInp').click()" title="Restore a saved file or the last browser save">Load work</button></label>
     </div>
     <div id="terminal"></div>
     <script src="./vendor/xterm.js"></script>
     <script src="./vendor/xterm-pty.js"></script>
-    <script src="./persist.js"></script>
-    <script src="./backup.js"></script>
+    <script src="./serialfs.js"></script>
     <script src="./module.js"></script>
     <script type="module">
       import initQemu from './out.js';
@@ -48,7 +48,7 @@
           for (const dir of ['/pack-rom', '/pack-kernel', '/pack-rootfs', '/pack-lab', '/share']) {
             try { mod.FS.mkdir(dir); } catch (e) {}
           }
-          await PERSIST.restore(mod.FS);
+
           let total = 0;
           for (const [url, dest] of ASSETS) {
             const r = await fetch(url);
@@ -76,6 +76,8 @@
       xterm.open(document.getElementById('terminal'));
       const { master, slave } = openpty();
       xterm.loadAddon(master);
+      window.__serial = ''; window.__paste = (t) => xterm.paste(t);
+      master.onWrite(([buf]) => { window.__serial += new TextDecoder().decode(buf); });
       Module.pty = slave;
       Module.mainScriptUrlOrBlob = new URL('./out.js', location.href).href;
 
@@ -109,15 +111,11 @@
           status('resumed - your session is exactly where it was');
         })();
       }
-      PERSIST.start(30000);
-      document.getElementById('saveBtn').onclick = () => PERSIST.save();
-      document.getElementById('exportBtn').onclick = () => BACKUP.export(Module.FS);
-      document.getElementById('importInp').onchange = async (e) => {
-        if (!e.target.files[0]) return;
-        const n = await BACKUP.import(Module.FS, e.target.files[0]);
-        await PERSIST.save();
-        status('restored ' + n + ' file(s) into the persistent directory');
-      };
+      window.__sfsStatus = (m) => document.getElementById('sfsStatus').textContent = m;
+      document.getElementById('saveBtn').onclick = () => SERIALFS.save();
+      document.getElementById('exportBtn').onclick = () => SERIALFS.download();
+      document.getElementById('importInp').onchange = (e) => { if (e.target.files[0]) SERIALFS.load(e.target.files[0]); e.target.value = ''; };
+      SERIALFS.hasSaved().then((h) => { if (h) window.__sfsStatus('saved work found — Load work restores it'); });
     </script>
   </body>
 </html>

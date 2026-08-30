@@ -55,8 +55,18 @@ free-plan max cacheable object size, and skipping it avoids streaming a huge bod
 through the Worker's 128 MiB memory (it still serves fine from R2, and egress is
 free). Ranged requests bypass the cache and read R2 directly; browsers also cache
 all three locally via the `immutable` header, so a returning user re-fetches
-nothing. Confirm it live with `curl -sI https://lab.bashtion.dev/qemu-system-x86_64.wasm`
-and look for `cf-cache-status: HIT` on the second request.
+nothing. The Worker stamps an **`x-bashtion-cache`** header so you can see it working:
+`MISS` on the first full GET, `HIT` on the next, `UNCACHED` for the oversized
+rootfs, and `BYPASS` for HEAD/range requests (which skip the cache). Note that
+`curl -I` sends **HEAD**, so it always shows `BYPASS` and never a hit; and
+`cf-cache-status` does **not** appear here — that is a CDN-cache header, not one
+the Workers Cache API emits. Verify with a full GET, run twice (expect `MISS`
+then `HIT`):
+
+```sh
+curl -s -o /dev/null -D - https://lab.bashtion.dev/qemu-system-x86_64.wasm \
+  | grep -i x-bashtion-cache
+```
 
 ## Security posture (best-practice hardening)
 

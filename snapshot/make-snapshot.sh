@@ -6,9 +6,11 @@
 # served together. Machine/CPU/memory/devices here mirror web/module.js
 # exactly - a stream restores only onto an identical machine.
 #
-# Engine pairing: the wasm engine is QEMU 8.2.0 (ktock fork); Ubuntu noble's
-# qemu-system-x86 is 8.2.2 - same machine-type series (pc-i440fx-8.2), so the
-# distro package captures a compatible stream. No custom QEMU build needed.
+# Engine pairing: the stream must come from the SAME TREE as the wasm engine.
+# Distro qemu 8.2.2 (same pc-i440fx-8.2 series) produces a state the fork
+# engine hangs on silently at -incoming (measured A/B: identical env plain-
+# boots fine); ktock's own migration example builds native qemu from the fork
+# tree for capture. Pass QEMU_BIN pointing at that native fork build.
 #
 # Usage: make-snapshot.sh [image-dir] [out-dir]   (defaults: out/image out/snapshot)
 set -euo pipefail
@@ -20,7 +22,8 @@ cp "$IMG/rootfs.ext4" "$OUT/rootfs-booted.ext4"
 cp "$IMG/vdb.qcow2"   "$OUT/vdb.qcow2"
 mkdir -p "$OUT/share"
 
-qemu-system-x86_64 \
+: "${QEMU_BIN:=qemu-system-x86_64}"
+"$QEMU_BIN" \
   -nographic -M pc-i440fx-8.2 -cpu qemu64,+rdrand -smp 1 \
   -m 512M -accel tcg,tb-size=128 \
   -nic none \

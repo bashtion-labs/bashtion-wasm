@@ -191,13 +191,22 @@ RUN set -e; mkdir -p /rootfs/srv/apt; \
     chroot /rootfs sh -c "cd /srv/apt && dpkg-scanpackages . /dev/null | gzip > Packages.gz"; \
     printf 'deb [trusted=yes] file:/srv/apt ./\n' > /rootfs/etc/apt/sources.list.d/local.list; \
     rm -f /rootfs/etc/apt/sources.list.d/ubuntu.sources; \
-    chroot /rootfs apt-get update -qq || true
+    rm -rf /rootfs/var/lib/apt/lists/* /rootfs/var/cache/apt/*.bin; \
+    chroot /rootfs apt-get update
 
 # --------------------------------------------------------------- trim pass
 RUN rm -f /rootfs/etc/resolv.conf && touch /rootfs/etc/resolv.conf
-RUN rm -rf /rootfs/usr/share/vim/vim*/doc /rootfs/usr/share/vim/vim*/tutor \
+RUN set -e; \
+    rm -rf /rootfs/usr/share/vim/vim*/doc /rootfs/usr/share/vim/vim*/tutor \
+           /rootfs/usr/share/vim/vim*/spell /rootfs/usr/share/vim/vim*/lang \
            /rootfs/usr/share/zoneinfo/right /rootfs/usr/share/zoneinfo/posix \
-           /rootfs/var/cache/apt/archives/*.deb /rootfs/var/lib/apt/lists/*_Packages* || true; \
+           /rootfs/var/cache/apt/archives /rootfs/var/cache/man \
+           /rootfs/usr/share/icons /rootfs/usr/share/fonts; \
+    # keep only English message catalogs
+    find /rootfs/usr/share/locale -mindepth 1 -maxdepth 1 \
+         ! -name 'en*' ! -name 'C.*' ! -name locale.alias -exec rm -rf {} +; \
+    # python bytecode caches regenerate on use
+    find /rootfs/usr/lib/python3* -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null; \
     du -sh /rootfs
 
 # size evidence in the build log: top consumers before the image is cut
@@ -206,7 +215,7 @@ RUN du -x --max-depth=2 --block-size=1M /rootfs 2>/dev/null | sort -rn | head -2
 # ------------------------------------------------------------- disk images
 # root: measured content + headroom for user-created files
 RUN size_kb=$(du -s --block-size=1024 /rootfs | cut -f1); \
-    size_mb=$(( size_kb / 1024 * 120 / 100 + 128 )); \
+    size_mb=$(( size_kb / 1024 * 108 / 100 + 64 )); \
     echo "rootfs ${size_mb}M"; \
     mke2fs -q -t ext4 -J size=16 -L bashtion-root -d /rootfs -b 4096 \
       /out/rootfs.ext4 ${size_mb}M

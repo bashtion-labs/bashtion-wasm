@@ -129,9 +129,15 @@ JIT backend as a patch series on upstream, or (b) building from the fork.
 
 ## Status
 
-Early. The build pipeline is scaffolded against upstream v11.1.1; the wasm build and the
-guest image are not yet validated. Capability coverage will be recorded here once measured
-rather than assumed.
+**Builds.** Upstream QEMU v11.1.1 compiles to wasm64 with virtfs enabled (the patch set in
+`patches/qemu/`), xterm-pty linked for terminal I/O; the Ubuntu noble guest image builds
+end-to-end with the dm/quota/9p/netfilter module assertions passing (kernel discovered from
+the pinned snapshot, currently 6.8.0-31-generic).
+
+**Not yet booted in a browser.** The open questions, in order: whether TCI interpretation
+speed is acceptable for an interactive guest; whether the memory arithmetic (rootfs MEMFS
+preload + guest RAM + TB cache inside the fixed 2 GB heap) holds; and 9p/dual-disk behavior
+at runtime. Boot-time and memory measurements will be recorded here, not estimated.
 
 ## Licence
 

@@ -1,0 +1,43 @@
+name: snapshot
+
+# Pre-booted VM state for browser restore: builds the guest image, boots it on
+# the runner's native qemu (8.2.x, machine-series-matched to the wasm engine's
+# 8.2.0), captures a migration stream after the autologin shell appears, and
+# publishes the matched {rootfs-booted.ext4, vdb.qcow2, vm.state} set.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['snapshot/**', 'image/**', '.github/workflows/snapshot.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build guest image
+        run: make image
+
+      - name: Install qemu
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-system-x86 && qemu-system-x86_64 --version | head -1
+
+      - name: Capture pre-booted state
+        run: ./snapshot/make-snapshot.sh out/image out/snapshot
+
+      - name: Boot log tail (evidence)
+        if: always()
+        run: tail -30 out/snapshot/boot-console.log || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: snapshot-set
+          path: |
+            out/snapshot/rootfs-booted.ext4
+            out/snapshot/vdb.qcow2
+            out/snapshot/vm.state
+            out/snapshot/boot-console.log
+          retention-days: 14

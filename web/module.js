@@ -8,7 +8,7 @@
 // ~1.4 GB until measured.
 globalThis.Module = {
     arguments: [
-        '-nographic', '-M', 'pc', '-cpu', 'qemu64,+rdrand', '-smp', '1',
+        '-nographic', '-M', 'pc-i440fx-8.2', '-cpu', 'qemu64,+rdrand', '-smp', '1',
         '-m', '512M', '-accel', 'tcg,tb-size=128',
         '-L', '/pack-rom/',
         '-nic', 'none',

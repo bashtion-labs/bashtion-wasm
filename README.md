@@ -145,6 +145,21 @@ patches remain in-tree: if upstream ever merges a JIT backend, the A/B harness r
 
 ## Status
 
+**Proven.** On the fork JIT engine, the guest reaches a root shell in ~25 s (kernel init)
+and the full storage-administration sequence — pvcreate, vgcreate, lvcreate, mkfs.ext4,
+mount, write, unmount, remount, read-back — completes against the second virtio disk in
+~10 s more, all in a stock Chromium tab served from static files (runtime-computed output
+markers; full serial transcript retained). Full-systemd boot on the same engine reaches
+the login prompt in 6m18s, deterministically.
+
+**Known open issue:** the fork-era emscripten-pty's blocking-read wake fails after the
+first read in some paths — measured as login(1)'s echo-off password read never completing
+("Login timed out after 60 seconds" with the username delivered fine) and as bash's
+readline/bracketed-paste swallowing pasted newlines. dash consumes pasted input reliably.
+Root fix: port xterm-pty 0.12.0's poll/read repairs to the fork engine's linked
+emscripten-pty. Serial-console autologin is baked in regardless (kiosk-appropriate).
+
+Previous status:
 **Builds.** Upstream QEMU v11.1.1 compiles to wasm64 with virtfs enabled (the patch set in
 `patches/qemu/`), xterm-pty linked for terminal I/O; the Ubuntu noble guest image builds
 end-to-end with the dm/quota/9p/netfilter module assertions passing (kernel discovered from

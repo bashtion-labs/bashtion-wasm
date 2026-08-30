@@ -11,6 +11,14 @@
 //   * Responses carry nosniff + same-origin CORP + long immutable cache.
 // The large files are same-origin subresources, so they need no COOP/COEP or
 // CORS; the cross-origin-isolation headers live on the HTML (deploy/_headers).
+//
+// Edge caching: a full GET for one of these files is served from Cloudflare's
+// edge cache when possible, so repeat visitors don't re-read R2 (cuts Worker
+// invocations and R2 Class B operations). Only full GETs are cached — ranged
+// requests (rare; emscripten fetches these as a single full GET) go straight to
+// R2 — and only objects under CACHE_MAX_BYTES are stored, which keeps the
+// ~874 MiB rootfs (over the free-plan cache limit anyway) from being streamed
+// through the Worker's 128 MiB memory.
 
 // path -> { R2 object key, content-type }. Only these three paths are served
 // from R2; every other path falls through to static assets.
@@ -27,8 +35,13 @@ const SECURITY_HEADERS = {
   'cache-control': 'public, max-age=31536000, immutable',
 };
 
+// Don't put objects larger than this in the edge cache: it is above the
+// free-plan max cacheable object size, and skipping it avoids teeing a huge
+// body through the Worker. Such files still serve fine, just uncached.
+const CACHE_MAX_BYTES = 512 * 1024 * 1024;
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const spec = R2_FILES[new URL(request.url).pathname];
 
     // Anything not on the allowlist is a static asset (page, JS, small data).
@@ -41,45 +54,78 @@ export default {
       });
     }
 
-    // Honour Range so the ~900 MB rootfs download is resumable and CDN-friendly.
     const rangeHeader = request.headers.get('range');
-    const range = rangeHeader ? parseRange(rangeHeader) : undefined;
-    if (rangeHeader && !range) {
-      return new Response('Range Not Satisfiable', { status: 416 });
+
+    // Ranged and HEAD requests bypass the edge cache and read R2 directly.
+    if (rangeHeader || request.method === 'HEAD') {
+      return serveFromR2(request, env, spec, rangeHeader);
     }
 
-    const object = await env.BUCKET.get(spec.key, {
-      range,
-      onlyIf: request.headers, // enables 304 via If-None-Match / If-Modified-Since
-    });
+    // Full GET: try the edge cache first. Normalise the key to the URL so
+    // client headers can't fragment the cache.
+    const cache = caches.default;
+    const cacheKey = new Request(new URL(request.url).toString(), { method: 'GET' });
+    const hit = await cache.match(cacheKey);
+    if (hit) return hit;
 
-    // Missing object -> generic 404 (do not echo the key).
+    const object = await env.BUCKET.get(spec.key);
     if (!object) return new Response('Not Found', { status: 404 });
 
     const headers = new Headers(SECURITY_HEADERS);
     object.writeHttpMetadata(headers); // etag, last-modified
     headers.set('content-type', spec.type);
     headers.set('accept-ranges', 'bytes');
+    headers.set('content-length', String(object.size));
 
-    // Precondition matched (304) or a HEAD: no body.
-    if (!('body' in object) || object.body === undefined) {
-      return new Response(null, { status: 304, headers });
-    }
-    if (request.method === 'HEAD') {
-      headers.set('content-length', String(object.size));
-      return new Response(null, { status: 200, headers });
-    }
+    const response = new Response(object.body, { status: 200, headers });
 
-    let status = 200;
-    if (range && object.range) {
-      const offset = object.range.offset ?? 0;
-      const length = object.range.length ?? (object.size - offset);
-      headers.set('content-range', `bytes ${offset}-${offset + length - 1}/${object.size}`);
-      status = 206;
+    // Store a copy at the edge (best-effort). Skip oversized objects; swallow
+    // any cache error so it never affects the response already being served.
+    if (object.size <= CACHE_MAX_BYTES) {
+      ctx.waitUntil(cache.put(cacheKey, response.clone()).catch(() => {}));
     }
-    return new Response(object.body, { status, headers });
+    return response;
   },
 };
+
+// Direct R2 read with Range / conditional / HEAD support (uncached path).
+async function serveFromR2(request, env, spec, rangeHeader) {
+  const range = rangeHeader ? parseRange(rangeHeader) : undefined;
+  if (rangeHeader && !range) {
+    return new Response('Range Not Satisfiable', { status: 416 });
+  }
+
+  const object = await env.BUCKET.get(spec.key, {
+    range,
+    onlyIf: request.headers, // enables 304 via If-None-Match / If-Modified-Since
+  });
+
+  // Missing object -> generic 404 (do not echo the key).
+  if (!object) return new Response('Not Found', { status: 404 });
+
+  const headers = new Headers(SECURITY_HEADERS);
+  object.writeHttpMetadata(headers);
+  headers.set('content-type', spec.type);
+  headers.set('accept-ranges', 'bytes');
+
+  // Precondition matched (304): no body.
+  if (!('body' in object) || object.body === undefined) {
+    return new Response(null, { status: 304, headers });
+  }
+  if (request.method === 'HEAD') {
+    headers.set('content-length', String(object.size));
+    return new Response(null, { status: 200, headers });
+  }
+
+  let status = 200;
+  if (range && object.range) {
+    const offset = object.range.offset ?? 0;
+    const length = object.range.length ?? (object.size - offset);
+    headers.set('content-range', `bytes ${offset}-${offset + length - 1}/${object.size}`);
+    status = 206;
+  }
+  return new Response(object.body, { status, headers });
+}
 
 // "bytes=START-END" (either end optional) -> R2 range option, or null if malformed.
 function parseRange(header) {

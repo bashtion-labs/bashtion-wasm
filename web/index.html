@@ -58,7 +58,7 @@
             mod.FS.close(stream);
             total += done;
           }
-          status(`assets loaded (${(total / 1e6) | 0} MB); starting VM — first boot is slow (interpreter, no JIT)…`);
+          status(`assets loaded (${(total / 1e6) | 0} MB); VM starting. BIOS appears briefly, then the kernel boots — expect several minutes; kernel messages stream as it works.`);
           mod.removeRunDependency('bashtion-assets');
         })().catch((e) => status('FAILED: ' + e.message));
       });

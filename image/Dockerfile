@@ -211,7 +211,16 @@ RUN mkdir -p /rootfs/etc/systemd/system.conf.d && printf '%s\n' \
 # observed live (udev-trigger 10min+ while modules-load finished in seconds).
 RUN printf 'virtio_rng\n' > /rootfs/etc/modules-load.d/bashtion-entropy.conf
 
-# serial console autologin-free getty; console on ttyS0
+# Serial console with autologin: this is a kiosk-style safety-net appliance -
+# credential friction serves nobody, and sudo still gates privilege. It also
+# sidesteps a real bug: under the fork engine's emscripten-pty (0.10.x era),
+# login(1)'s echo-off password read never wakes (first blocking read works,
+# the second doesn't) - "Login timed out after 60 seconds" on every attempt
+# while the username delivers fine. Measured live; autologin removes the
+# second read from the boot path entirely.
+RUN mkdir -p /rootfs/etc/systemd/system/serial-getty@ttyS0.service.d && \
+    printf '[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin user --keep-baud 115200,57600,38400,9600 %%I $TERM\n' \
+      > /rootfs/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf
 RUN chroot /rootfs systemctl enable serial-getty@ttyS0.service
 # Under TCI each generator costs ~8s and systemd's sandboxed-generator batch
 # has a hard 90s internal deadline (SIGALRM -> "Protocol error" -> "Freezing

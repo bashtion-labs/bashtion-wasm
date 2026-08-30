@@ -118,14 +118,30 @@ must send `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: require-corp`. On hosts that cannot set headers, ship
 `coi-serviceworker.js`.
 
-## Performance note: upstream wasm is TCI (interpreter), not JIT
+## Engine verdict: ktock fork JIT (measured), upstream TCI unfit
 
-Upstream requires `--enable-tcg-interpreter` on wasm hosts: the TB-to-wasm TCG **JIT**
-backend exists only in the ktock fork (`tcg/wasm32`) and was never merged upstream, so
-upstream wasm execution is TCI — QEMU's bytecode interpreter, several times slower than a
-TCG JIT. Whether an interactive guest is usable under TCI-in-wasm is an open question the
-first boot measurement must answer. If it is not, the options are (a) carrying the fork's
-JIT backend as a patch series on upstream, or (b) building from the fork.
+Upstream QEMU's wasm support executes via TCI (its bytecode interpreter; the TB-to-wasm JIT
+exists only in the ktock fork and was never merged). A controlled A/B — same guest image,
+same page, same machine — settled the choice:
+
+| Milestone | upstream wasm64 TCI | fork wasm32 JIT |
+|---|---|---|
+| crng ready | 72.8 s | 10.2 s |
+| kernel done | 195.4 s | 27.7 s |
+| journald finished | never (13-22 min, imprisoned) | 90.3 s |
+| udev finished | never (34+ min) | 145.4 s |
+| login prompt | never (3 x 40-min timeouts) | 378.4 s |
+
+Under TCI, unrelated guest services freeze after ~22 s of CPU each (udev never announces
+devices, so the serial getty's device unit times out and login is unreachable), across
+three 40-minute attempts and after ruling out entropy (fixed, verified via
+`random: crng init done`) and glib's runtime-dead `pipe2` (link-detected on Emscripten,
+fails at runtime; the `__syscall_pipe2` import was purged from the binary and the stall
+persisted). The failure signature points at the TCI/Asyncify execution layer itself -
+upstream's CI builds this target but never boots it. Worth reporting to qemu-devel.
+
+The build therefore uses the ktock fork engine (wasm32 + JIT). The wasm64 lane and its
+patches remain in-tree: if upstream ever merges a JIT backend, the A/B harness re-runs.
 
 ## Status
 

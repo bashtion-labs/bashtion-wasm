@@ -157,7 +157,7 @@ RUN set -e; \
 # fstab: root passno 0 (no initramfs fsck path); 9p share is optional at boot
 RUN printf '%s\n' \
       '/dev/vda / ext4 defaults,errors=remount-ro 0 0' \
-      'share0 /home/user/persist 9p trans=virtio,version=9p2000.L,msize=512000,cache=loose,rw,nofail 0 0' \
+      'share0 /home/user/persist 9p trans=virtio,version=9p2000.L,msize=512000,cache=loose,rw,noauto,nofail 0 0' \
       > /rootfs/etc/fstab && \
     mkdir -p /rootfs/home/user/persist && \
     chroot /rootfs chown user:user /home/user/persist

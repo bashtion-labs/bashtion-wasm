@@ -177,7 +177,6 @@ RUN mkdir -p /rootfs/etc/lvm && \
 RUN for u in systemd-networkd.service systemd-networkd-wait-online.service \
              systemd-timesyncd.service apt-daily.timer apt-daily-upgrade.timer \
              motd-news.timer man-db.timer e2scrub_all.timer fstrim.timer \
-             systemd-random-seed.service \
              keyboard-setup.service console-setup.service \
              lvm2-monitor.service blk-availability.service \
              modprobe@drm.service modprobe@configfs.service \

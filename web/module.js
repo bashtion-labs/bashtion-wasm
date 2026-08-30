@@ -13,7 +13,7 @@ globalThis.Module = {
         '-L', '/pack-rom/',
         '-nic', 'none',
         '-kernel', '/pack-kernel/vmlinuz',
-        '-append', 'console=ttyS0,115200n8 root=/dev/vda rw rootwait nokaslr nosoftlockup nowatchdog random.trust_cpu=on systemd.show_status=1',
+        '-append', 'console=ttyS0,115200n8 root=/dev/vda rw rootwait nokaslr nosoftlockup nowatchdog random.trust_cpu=on modules_load=virtio_rng systemd.show_status=1',
         '-drive', 'id=root,file=/pack-rootfs/rootfs.ext4,format=raw,if=none',
         '-device', 'virtio-blk-pci,drive=root',
         // second, empty disk for storage-administration exercises

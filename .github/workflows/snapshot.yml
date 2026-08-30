@@ -22,11 +22,21 @@ jobs:
       - name: Build guest image
         run: make image
 
-      - name: Install qemu
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-system-x86 && qemu-system-x86_64 --version | head -1
+      # The migration stream must come from the same tree as the wasm engine:
+      # a distro-8.2.2 stream hangs the fork engine's -incoming silently
+      # (measured), and ktock's migration example captures with a native build
+      # of the fork itself.
+      - name: Build native qemu from the fork tree
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq             ninja-build libglib2.0-dev libpixman-1-dev libattr1-dev             libcap-ng-dev flex bison python3-venv zlib1g-dev
+          git clone --depth 1 https://github.com/ktock/qemu-wasm.git forknative
+          cd forknative && mkdir b && cd b
+          ../configure --target-list=x86_64-softmmu --without-default-features             --enable-system --enable-virtfs --enable-attr --enable-cap-ng             --with-coroutine=ucontext
+          make -j"$(nproc)" qemu-system-x86_64
+          ./qemu-system-x86_64 --version | head -1
 
       - name: Capture pre-booted state
-        run: ./snapshot/make-snapshot.sh out/image out/snapshot
+        run: QEMU_BIN="$PWD/forknative/b/qemu-system-x86_64" ./snapshot/make-snapshot.sh out/image out/snapshot
 
       - name: Boot log tail (evidence)
         if: always()

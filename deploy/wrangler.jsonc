@@ -23,6 +23,17 @@
     }
   ],
 
+  // Serve on the custom subdomain. The bashtion.dev zone must already be on
+  // this Cloudflare account (it is); `wrangler deploy` provisions the DNS
+  // record and the TLS certificate for lab.bashtion.dev automatically.
+  "routes": [
+    { "pattern": "lab.bashtion.dev", "custom_domain": true }
+  ],
+
+  // Lock the site to that single canonical hostname — do NOT also expose the
+  // bashtion.<subdomain>.workers.dev URL.
+  "workers_dev": false,
+
   "observability": {
     "enabled": true
   }

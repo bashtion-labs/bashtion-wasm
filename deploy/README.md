@@ -23,7 +23,7 @@ Everything is served from **one origin**, which keeps the setup simple and
 sidesteps all cross-origin (CORS/CORP) complexity.
 
 ```
-browser ──▶ https://bashtion.<you>.workers.dev
+browser ──▶ https://lab.bashtion.dev
              ├─ /  /*.js  /vendor/*  /load-kernel.data …  ─▶ Static Assets (public/)
              └─ /qemu-system-x86_64.wasm                   ─▶ worker.js ─▶ private R2
                 /load-rootfsB.data  /load-state.data           (bucket binding)
@@ -80,7 +80,8 @@ then load it under the same headers) before shipping.
 
 ## Prerequisites
 
-- A free Cloudflare account.
+- A free Cloudflare account, with the **bashtion.dev** zone already added to it
+  (the deploy serves on `lab.bashtion.dev`).
 - Node.js (for `npx wrangler`). No global install needed.
 - The built site at `out/gate1/htdocsF/` (from the build/snapshot pipeline, or a
   CI artifact download).
@@ -169,18 +170,23 @@ cd deploy
 npx wrangler deploy
 ```
 
-Wrangler prints the URL, e.g. `https://bashtion.<you>.workers.dev`.
+Because `wrangler.jsonc` declares `lab.bashtion.dev` as a **custom domain**,
+`wrangler deploy` creates the DNS record and provisions its TLS certificate
+automatically. On the **first** deploy the certificate can take a minute or two
+to go live — a brief TLS error right after deploying is normal; retry shortly.
+`workers_dev` is disabled, so the site is reachable **only** at
+`https://lab.bashtion.dev` (no `*.workers.dev` URL).
 
 ## Step 6 — Verify
 
 ```sh
 # Cross-origin isolation + CSP present on the page:
-curl -sI https://bashtion.<you>.workers.dev/ | \
+curl -sI https://lab.bashtion.dev/ | \
   grep -iE 'cross-origin-(opener|embedder)|content-security-policy'
 
 # The big files come from R2 through the Worker, with Range support:
 curl -sI -H 'Range: bytes=0-15' \
-  https://bashtion.<you>.workers.dev/qemu-system-x86_64.wasm | \
+  https://lab.bashtion.dev/qemu-system-x86_64.wasm | \
   grep -iE 'HTTP|content-range|content-type'
 ```
 
@@ -203,9 +209,10 @@ made it into the deploy.
 
 ## Optional add-ons
 
-- **Custom domain.** Add a domain you own to Cloudflare, then in the Worker's
-  settings add a route/custom domain. HSTS in `_headers` then applies to a real
-  domain.
+- **Zone hygiene.** `lab.bashtion.dev` is configured as the canonical host (see
+  `wrangler.jsonc`). For belt-and-suspenders on the zone, set SSL/TLS to Full
+  (Strict) and turn on **Always Use HTTPS** and a minimum TLS version of 1.2 in
+  the bashtion.dev dashboard.
 - **Restrict who can load it** (if you ever want it gated to a known group
   rather than open): put **Cloudflare Access** (Zero Trust, free for small
   teams) in front of the Worker. Note this adds a login step, which usually

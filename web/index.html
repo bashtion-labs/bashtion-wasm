@@ -7,23 +7,61 @@
     <link rel="stylesheet" href="./vendor/xterm.css">
     <style>
       html, body { height: 100%; margin: 0; background: #111; }
-      #terminal { height: 100%; }
-      #status { color: #9a9a9a; font: 13px system-ui; padding: 6px 10px; }
+      #terminal { height: calc(100% - 30px); }
+      #status { color: #9a9a9a; font: 13px system-ui; padding: 6px 10px; height: 18px; }
     </style>
   </head>
   <body>
     <div id="status">loading…</div>
     <div id="terminal"></div>
-    <script src="./load-rom.js"></script>
-    <script src="./load-kernel.js"></script>
-    <script src="./load-rootfs.js"></script>
-    <script src="./load-lab.js"></script>
     <script src="./vendor/xterm.js"></script>
     <script src="./vendor/xterm-pty.js"></script>
     <script src="./module.js"></script>
     <script type="module">
       import initQemu from './out.js';
       const status = (m) => document.getElementById('status').textContent = m;
+
+      // Assets are fetched and streamed straight into the emscripten FS in
+      // preRun - no file_packager bundles. Streaming in chunks avoids holding
+      // both an ArrayBuffer and the FS copy of a ~1 GB image at once.
+      const ASSETS = [
+        ['assets/bios-256k.bin',      '/pack-rom/bios-256k.bin'],
+        ['assets/vgabios-stdvga.bin', '/pack-rom/vgabios-stdvga.bin'],
+        ['assets/kvmvapic.bin',       '/pack-rom/kvmvapic.bin'],
+        ['assets/linuxboot_dma.bin',  '/pack-rom/linuxboot_dma.bin'],
+        ['assets/vmlinuz',            '/pack-kernel/vmlinuz'],
+        ['assets/rootfs.ext4',        '/pack-rootfs/rootfs.ext4'],
+        ['assets/vdb.qcow2',          '/pack-lab/vdb.qcow2'],
+      ];
+
+      Module.preRun.push(function (mod) {
+        mod.addRunDependency('bashtion-assets');
+        (async () => {
+          for (const dir of ['/pack-rom', '/pack-kernel', '/pack-rootfs', '/pack-lab', '/share']) {
+            try { mod.FS.mkdir(dir); } catch (e) {}
+          }
+          let total = 0;
+          for (const [url, dest] of ASSETS) {
+            const r = await fetch(url);
+            if (!r.ok) throw new Error(url + ': HTTP ' + r.status);
+            const size = +r.headers.get('content-length') || 0;
+            const stream = mod.FS.open(dest, 'w');
+            let done = 0;
+            const reader = r.body.getReader();
+            for (;;) {
+              const { value, done: eof } = await reader.read();
+              if (eof) break;
+              mod.FS.write(stream, value, 0, value.length);
+              done += value.length;
+              if (size) status(`fetching ${url.split('/').pop()}: ${(done / size * 100) | 0}%`);
+            }
+            mod.FS.close(stream);
+            total += done;
+          }
+          status(`assets loaded (${(total / 1e6) | 0} MB); starting VM — first boot is slow (interpreter, no JIT)…`);
+          mod.removeRunDependency('bashtion-assets');
+        })().catch((e) => status('FAILED: ' + e.message));
+      });
 
       const xterm = new Terminal({ scrollback: 5000 });
       xterm.open(document.getElementById('terminal'));
@@ -32,11 +70,9 @@
       Module.pty = slave;
       Module.mainScriptUrlOrBlob = new URL('./out.js', location.href).href;
 
-      status('starting VM (first boot is slow: interpreter, no JIT)…');
       const instance = await initQemu(Module);
 
-      // xterm-pty poll fix, as proven in the ktock harness: report readiness
-      // from the pty when it has no pending readable data.
+      // xterm-pty poll fix, as proven in the ktock harness
       const oldPoll = Module.TTY.stream_ops.poll;
       const pty = Module.pty;
       Module.TTY.stream_ops.poll = function (stream, timeout) {

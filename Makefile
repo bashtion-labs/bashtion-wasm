@@ -54,8 +54,7 @@ qemu: builder-up
 	docker exec -w /build $(BUILDER) emconfigure /qemu/configure \
 	  --static --cpu=wasm64 --target-list=x86_64-softmmu \
 	  --cross-prefix= --without-default-features \
-	  --enable-system --enable-tcg-interpreter --disable-tools --enable-virtfs \
-	  --extra-ldflags="--js-library=/build/node_modules/xterm-pty/emscripten-pty.js"
+	  --enable-system --enable-tcg-interpreter --disable-tools --enable-virtfs
 	docker exec -w /build $(BUILDER) emmake make -j$$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 	docker exec $(BUILDER) sh -c 'ls -la /build/qemu-system-x86_64*'
 	mkdir -p $(HTDOCS)
@@ -73,27 +72,17 @@ snapshot:
 	./snapshot/make-snapshot.sh
 
 ## Package guest assets + page into $(HTDOCS). Requires: make qemu, make image.
-pack: 
-	mkdir -p $(HTDOCS)/vendor
-	# vendored terminal libs from the toolchain image (no CDN at runtime)
+## No file_packager: the page streams assets into the emscripten FS itself,
+## which also removes the amd64-only-toolchain dependency from packaging.
+pack:
+	mkdir -p $(HTDOCS)/vendor $(HTDOCS)/assets
 	docker cp $(BUILDER):/build/node_modules/@xterm/xterm/lib/xterm.js $(HTDOCS)/vendor/
 	docker cp $(BUILDER):/build/node_modules/@xterm/xterm/css/xterm.css $(HTDOCS)/vendor/
 	docker cp $(BUILDER):/build/node_modules/xterm-pty/index.js $(HTDOCS)/vendor/xterm-pty.js
-	# per-asset bundles so the browser caches kernel/rom independently of rootfs
-	mkdir -p $(OUT)/pack-rom $(OUT)/pack-kernel $(OUT)/pack-rootfs $(OUT)/pack-lab
 	cp third_party/qemu/pc-bios/bios-256k.bin third_party/qemu/pc-bios/vgabios-stdvga.bin \
 	   third_party/qemu/pc-bios/kvmvapic.bin third_party/qemu/pc-bios/linuxboot_dma.bin \
-	   $(OUT)/pack-rom/
-	cp $(OUT)/image/vmlinuz $(OUT)/pack-kernel/
-	cp $(OUT)/image/rootfs.ext4 $(OUT)/pack-rootfs/
-	cp $(OUT)/image/vdb.qcow2 $(OUT)/pack-lab/
-	for n in rom kernel rootfs lab; do \
-	  docker cp $(OUT)/pack-$$n $(BUILDER):/ && \
-	  docker exec -w /build $(BUILDER) sh -c \
-	    "python3 /emsdk/upstream/emscripten/tools/file_packager.py load-$$n.data --preload /pack-$$n > load-$$n.js" && \
-	  docker cp $(BUILDER):/build/load-$$n.js $(HTDOCS)/ && \
-	  docker cp $(BUILDER):/build/load-$$n.data $(HTDOCS)/ || exit 1; \
-	done
+	   $(HTDOCS)/assets/
+	cp $(OUT)/image/vmlinuz $(OUT)/image/rootfs.ext4 $(OUT)/image/vdb.qcow2 $(HTDOCS)/assets/
 	cp web/index.html web/module.js $(HTDOCS)/
 
 ## Serve locally with the COOP/COEP headers cross-origin isolation requires.

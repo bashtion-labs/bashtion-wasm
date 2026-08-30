@@ -39,3 +39,4 @@ virtio_rng
 unix_diag
 netlink_diag
 loop
+qemu_fw_cfg

@@ -177,6 +177,18 @@ RUN for u in systemd-networkd.service systemd-networkd-wait-online.service \
     done
 # serial console autologin-free getty; console on ttyS0
 RUN chroot /rootfs systemctl enable serial-getty@ttyS0.service
+# Under TCI each generator costs ~8s and systemd's sandboxed-generator batch
+# has a hard 90s internal deadline (SIGALRM -> "Protocol error" -> "Freezing
+# execution", measured). Mask every generator this machine cannot use via
+# /etc/ overrides - dpkg-owned files stay untouched. Kept: fstab (mounts),
+# getty (serial console), debug.
+RUN mkdir -p /rootfs/etc/systemd/system-generators && \
+    for g in $(ls /rootfs/usr/lib/systemd/system-generators/); do \
+      case "$g" in \
+        systemd-fstab-generator|systemd-getty-generator|systemd-debug-generator) ;; \
+        *) ln -sf /dev/null /rootfs/etc/systemd/system-generators/$g ;; \
+      esac; \
+    done && ls -la /rootfs/etc/systemd/system-generators/ | head -20
 
 # ------------------------------------------------------------- offline apt
 # Packages installable DURING use (not preinstalled), with dependency closure.

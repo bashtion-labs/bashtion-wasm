@@ -1,0 +1,12 @@
+diff --git a/tests/docker/dockerfiles/emsdk-wasm64-cross.docker b/tests/docker/dockerfiles/emsdk-wasm64-cross.docker
+index c04a741..76faac1 100644
+--- a/tests/docker/dockerfiles/emsdk-wasm64-cross.docker
++++ b/tests/docker/dockerfiles/emsdk-wasm64-cross.docker
+@@ -143,6 +143,7 @@ RUN meson setup _build --prefix=$TARGET --cross-file=/cross.meson \
+     -Dtests=false -Dglib_debug=disabled -Dglib_assert=false -Dglib_checks=false
+ # FIXME: emscripten doesn't provide some pthread functions in the final link,
+ #        which isn't detected during meson setup.
++RUN sed -i -E "/#define HAVE_PIPE2 1/d" ./_build/config.h
+ RUN sed -i -E "/#define HAVE_POSIX_SPAWN 1/d" ./_build/config.h
+ RUN sed -i -E "/#define HAVE_PTHREAD_GETNAME_NP 1/d" ./_build/config.h
+ RUN meson install -C _build

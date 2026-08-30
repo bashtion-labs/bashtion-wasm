@@ -169,10 +169,24 @@ RUN mkdir -p /rootfs/etc/lvm && \
 # systemd: mask what hangs or fails on a no-network, no-RTC-battery, slow box.
 # Deliberately NOT setting a global DefaultTimeoutStartSec: on weak hardware a
 # legitimate slow unit must not cascade into failures.
+# Every masked unit is ~5-10s of TCI time at boot. Everything here is either
+# network-dependent (none exists), hardware-dependent (none exists), or
+# maintenance that a disposable browser VM never needs. lvm2-monitor is
+# masked deliberately: it is the dmeventd monitoring daemon, not the lvm2
+# command-line tools the storage exercises use.
 RUN for u in systemd-networkd.service systemd-networkd-wait-online.service \
              systemd-timesyncd.service apt-daily.timer apt-daily-upgrade.timer \
              motd-news.timer man-db.timer e2scrub_all.timer fstrim.timer \
-             systemd-random-seed.service; do \
+             systemd-random-seed.service \
+             keyboard-setup.service console-setup.service \
+             lvm2-monitor.service blk-availability.service \
+             modprobe@drm.service modprobe@configfs.service \
+             modprobe@fuse.service modprobe@efi_pstore.service \
+             systemd-binfmt.service systemd-pstore.service \
+             systemd-backlight@.service systemd-rfkill.service \
+             plymouth-quit-wait.service plymouth-start.service \
+             e2scrub_reap.service systemd-journal-flush.service \
+             setvtrgb.service; do \
       chroot /rootfs systemctl mask $u >/dev/null 2>&1 || true; \
     done
 # serial console autologin-free getty; console on ttyS0

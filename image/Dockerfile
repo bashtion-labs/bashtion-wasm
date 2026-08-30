@@ -183,6 +183,7 @@ RUN mkdir -p /rootfs/etc/lvm && \
 # command-line tools the storage exercises use.
 RUN for u in systemd-networkd.service systemd-networkd-wait-online.service \
              systemd-timesyncd.service apt-daily.timer apt-daily-upgrade.timer \
+             networkd-dispatcher.service \
              motd-news.timer man-db.timer e2scrub_all.timer fstrim.timer \
              keyboard-setup.service console-setup.service \
              lvm2-monitor.service blk-availability.service \

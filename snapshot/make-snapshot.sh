@@ -40,13 +40,17 @@ mkdir -p "$OUT/share"
 QPID=$!
 trap 'kill $QPID 2>/dev/null || true' EXIT
 
-# wait for the autologin shell on the serial console
+# wait for the REAL autologin shell prompt (ANSI-stripped; the loose pattern
+# once matched a status line and captured mid-boot)
+shell_up() {
+  sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' "$OUT/boot-console.log" 2>/dev/null \
+    | grep -qE '^user@bashtion:.*\$|automatic login'
+}
 for i in $(seq 1 240); do
-  grep -qE "bashtion.*[$#]|login: user" "$OUT/boot-console.log" 2>/dev/null && break
+  shell_up && break
   sleep 2
 done
-grep -qE "bashtion.*[$#]|login: user" "$OUT/boot-console.log" || {
-  echo "no shell within 8 min; tail:"; tail -5 "$OUT/boot-console.log"; exit 1; }
+shell_up || { echo "no shell within 8 min; tail:"; tail -5 "$OUT/boot-console.log"; exit 1; }
 sleep 10   # let the login session finish settling
 
 python3 - "$OUT" <<'PYQ'

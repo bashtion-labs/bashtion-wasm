@@ -49,5 +49,6 @@ jobs:
             out/snapshot/rootfs-booted.ext4
             out/snapshot/vdb.qcow2
             out/snapshot/vm.state
+            out/image/vmlinuz
             out/snapshot/boot-console.log
           retention-days: 14

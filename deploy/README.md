@@ -273,8 +273,37 @@ made it into the deploy.
   teams) in front of the Worker. Note this adds a login step, which usually
   defeats the "reachable from any locked-down browser" purpose — leave it off
   for the open safety-net use case.
-- **Rate limiting.** The free plan includes basic rate-limiting rules; you can
-  cap requests per IP to the big-file paths if abuse is ever a concern.
+- **Rate limiting (per IP) on the big-file paths.** In the **zone** (bashtion.dev)
+  dashboard: **Security → Security rules** (older accounts: **Security → WAF →
+  Rate limiting rules**) → **Create rule → Rate limiting rules**. Match the three
+  paths — click **Edit expression** and paste:
+
+  ```
+  http.request.uri.path in {"/qemu-system-x86_64.wasm" "/load-rootfsB.data" "/load-state.data"}
+  ```
+
+  Set **the same characteristics = IP** (the only per-IP option on free), enable
+  **"Also apply rate limiting to cached assets"** (Cache status) so it always
+  fires, then **When rate exceeds = 50 requests / 10 seconds**, **action =
+  Block**. Free-plan limits: **one** rule per zone, counting period and block
+  duration both **fixed at 10 s**, IP-only characteristic, Block returns HTTP 429.
+
+  Threshold reasoning: a cold browser load fetches each big file once (~3
+  requests), so 50 / 10 s allows ~16 simultaneous cold loads from one IP and
+  auto-recovers after 10 s. Raise it (100+/10 s) if many users may sit behind one
+  shared/NAT IP; lower it (20–30) for tighter protection when IPs are unique.
+
+- **Usage / billing alert — the honest state on free.** There is **no** alert
+  (free or paid) that warns you as you approach the Workers 100k-requests/day free
+  cap; it simply starts returning errors — **not** a bill — when exceeded.
+  Dollar-spend **Budget alerts** exist only once the account is **Pay-as-you-go**
+  (a payment method on file, e.g. because R2 is enabled beyond its free tier):
+  **Manage Account → Billing → Billable Usage → Create budget alert**, set a low
+  **Budget threshold (USD)** (e.g. $1) and an email recipient. They are
+  informational — they email you; they do **not** cap or pause usage. (Since
+  2026-06-15 a default budget alert is on for Pay-as-you-go accounts, so check
+  whether one already exists.) On a strictly-free account there is no metered
+  spend to threshold on.
 
 ## Files here
 

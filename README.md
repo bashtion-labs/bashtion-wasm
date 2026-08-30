@@ -156,11 +156,15 @@ Measured on the shipped stack (fork JIT engine, CI artifacts, localhost assets):
   kernel + 8 min 52 s userspace) — which is why the snapshot flow is the student path.
 - Input verified on both flows: the backported fd_read fix delivers pasted bytes into
   armed readline; pasted newlines execute (bracketed paste disabled in the image).
-- **Save / Download / Load work buttons proven** end to end: written marker deleted in the
-  guest, then Load restored it from browser storage (round trip 15.8 s save, 23.3 s load).
-  Transport is the serial console (guest home dir as tar.gz/base64 between sentinels), since
-  the engine's authoritative FS lives in the worker where the page cannot see it. Download
-  hands the same archive to a file the student keeps.
+- **Download / Load work buttons proven** end to end: a marker file downloaded, deleted in
+  the guest, then restored by Load (from the file, or from the browser-remembered copy that
+  Download also writes). Transport is the serial console (guest home dir as tar.gz/base64
+  between sentinels), since the engine's authoritative FS lives in the worker where the page
+  cannot see it. Download hands the same archive to a file the student keeps; a Save-to-
+  browser-only button was dropped as redundant (and least reliable on the managed devices
+  this serves, which can wipe browser storage — the downloaded file is the real safety net).
+  Both buttons confirm a live shell before capturing, so a click during boot fails fast with
+  guidance instead of hanging.
 - Storage persistence across unmount/remount proven (noble run: full chain in 35 s from
   page load under dash-init; resolute: LVM chain green in the restored session).
 

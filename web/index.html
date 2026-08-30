@@ -15,10 +15,9 @@
     <div id="status">loading…</div>
     <div id="controls" style="position:fixed;top:4px;right:8px;font:12px system-ui">
       <span id="sfsStatus" style="color:#9a9a9a;margin-right:8px"></span>
-      <button id="saveBtn" title="Save your home directory into this browser">Save work</button>
-      <button id="exportBtn" title="Download your home directory as a file you keep">Download my work</button>
+      <button id="exportBtn" title="Download your home directory as a file you keep (also remembered in this browser)">Download my work</button>
       <label><input type="file" id="importInp" hidden>
-        <button onclick="document.getElementById('importInp').click()" title="Restore a saved file or the last browser save">Load work</button></label>
+        <button onclick="document.getElementById('importInp').click()" title="Restore from a downloaded file, or your last download in this browser">Load work</button></label>
     </div>
     <div id="terminal"></div>
     <script src="./vendor/xterm.js"></script>
@@ -112,7 +111,6 @@
         })();
       }
       window.__sfsStatus = (m) => document.getElementById('sfsStatus').textContent = m;
-      document.getElementById('saveBtn').onclick = () => SERIALFS.save();
       document.getElementById('exportBtn').onclick = () => SERIALFS.download();
       document.getElementById('importInp').onchange = (e) => { if (e.target.files[0]) SERIALFS.load(e.target.files[0]); e.target.value = ''; };
       SERIALFS.hasSaved().then((h) => { if (h) window.__sfsStatus('saved work found — Load work restores it'); });

@@ -66,7 +66,13 @@ export default {
     const cache = caches.default;
     const cacheKey = new Request(new URL(request.url).toString(), { method: 'GET' });
     const hit = await cache.match(cacheKey);
-    if (hit) return hit;
+    if (hit) {
+      // Reconstruct so we can add the observability header (a cached Response's
+      // headers are immutable).
+      const tagged = new Response(hit.body, hit);
+      tagged.headers.set('x-bashtion-cache', 'HIT');
+      return tagged;
+    }
 
     const object = await env.BUCKET.get(spec.key);
     if (!object) return new Response('Not Found', { status: 404 });
@@ -79,11 +85,14 @@ export default {
 
     const response = new Response(object.body, { status: 200, headers });
 
-    // Store a copy at the edge (best-effort). Skip oversized objects; swallow
-    // any cache error so it never affects the response already being served.
-    if (object.size <= CACHE_MAX_BYTES) {
+    // Store a copy at the edge (best-effort) BEFORE tagging, so the cached copy
+    // stays clean. Skip oversized objects; swallow any cache error so it never
+    // affects the response already being served.
+    const cacheable = object.size <= CACHE_MAX_BYTES;
+    if (cacheable) {
       ctx.waitUntil(cache.put(cacheKey, response.clone()).catch(() => {}));
     }
+    response.headers.set('x-bashtion-cache', cacheable ? 'MISS' : 'UNCACHED');
     return response;
   },
 };
@@ -107,6 +116,7 @@ async function serveFromR2(request, env, spec, rangeHeader) {
   object.writeHttpMetadata(headers);
   headers.set('content-type', spec.type);
   headers.set('accept-ranges', 'bytes');
+  headers.set('x-bashtion-cache', 'BYPASS'); // range/HEAD are never cached
 
   // Precondition matched (304): no body.
   if (!('body' in object) || object.body === undefined) {

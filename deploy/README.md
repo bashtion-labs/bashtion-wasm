@@ -39,9 +39,24 @@ Yes, comfortably.
 - **R2 reads:** ~3 per cold load, of 10,000,000 free/month.
 - **Worker requests:** only the 3 big files hit the Worker; static-asset
   requests are free and unlimited. 100,000 Worker requests/day ≈ ~33,000 cold
-  loads/day of headroom.
+  loads/day of headroom — and `worker.js` edge-caches the wasm + state, so repeat
+  visitors in a region are served from cache without a Worker call or an R2 read
+  at all, pushing that headroom much higher.
 - **Bandwidth through the Worker** does not burn CPU time — streaming an R2
   object to the response is pass-through, so the free CPU limit is a non-issue.
+
+## Caching
+
+`worker.js` stores each full GET of `qemu-system-x86_64.wasm` and `load-state.data`
+in Cloudflare's edge cache (they are immutable), so a second visitor in the same
+region gets them straight from cache — no Worker invocation, no R2 read. The
+~874 MiB `load-rootfsB.data` is intentionally **not** cached: it is above the
+free-plan max cacheable object size, and skipping it avoids streaming a huge body
+through the Worker's 128 MiB memory (it still serves fine from R2, and egress is
+free). Ranged requests bypass the cache and read R2 directly; browsers also cache
+all three locally via the `immutable` header, so a returning user re-fetches
+nothing. Confirm it live with `curl -sI https://lab.bashtion.dev/qemu-system-x86_64.wasm`
+and look for `cf-cache-status: HIT` on the second request.
 
 ## Security posture (best-practice hardening)
 

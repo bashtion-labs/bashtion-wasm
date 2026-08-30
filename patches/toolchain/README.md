@@ -1,5 +1,7 @@
 # Toolchain patches
 
+> This patch serves the **experimental** upstream/TCI lane (`third_party/qemu`). The shipped engine is the ktock fork — see `../fork/`.
+
 Applied by `make toolchain` to a copy of
 `third_party/qemu/tests/docker/dockerfiles/emsdk-wasm64-cross.docker`; the submodule stays
 pristine.

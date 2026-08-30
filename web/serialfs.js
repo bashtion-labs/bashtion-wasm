@@ -1,8 +1,8 @@
-// Save/Load of the student's home directory over the serial console, with a
+// Save/Load of the user's home directory over the serial console, with a
 // clean overlay so the raw transfer (a base64 tar streaming across the tty)
 // is never shown. The overlay covers the terminal during a transfer, the
 // bytes are captured from the serial tap behind it, and the scrollback is
-// cleared afterwards so the student returns to a tidy prompt.
+// cleared afterwards so you return to a tidy prompt.
 'use strict';
 
 const SERIALFS = (() => {

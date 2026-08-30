@@ -1,30 +1,46 @@
-# Browser shell
+# Browser front end
 
-Not yet implemented; this documents the embedding contract verified from the QEMU tree.
+Everything the browser loads. The engine is the ktock/qemu-wasm fork (wasm32 + JIT); its
+build links xterm-pty for terminal I/O, and `qemu-system-x86_64` comes out as an ES-module
+JS bundle (`out.js`) plus a `.wasm` and a pthread worker.
 
-## What the wasm build produces
+## Files
 
-QEMU's configure auto-includes `configs/meson/emscripten.txt` when the host OS is
-emscripten (`configure` line ~1928), which fixes the link contract:
+- `index.html` — the page. Streams the guest assets (rom, kernel, rootfs, second disk, and
+  the restore `vm.state`) straight into the emscripten filesystem, wires xterm.js to the
+  guest serial console through xterm-pty, starts QEMU, and drives the restore-resume.
+- `module.js` — QEMU arguments for a **fresh boot** (kernel, two virtio disks, virtio-rng,
+  9p share, machine `pc-i440fx-8.2`, `-m 512M`).
+- `module-restore.js` — the same arguments plus `-incoming file:...` and a `bashtionRestore`
+  flag; used by the restore build. The wasm engine loads incoming state but leaves the VM
+  paused, so the page sends `cont` through QEMU's monitor (the `-nographic` mux) and then
+  switches back to the serial console.
+- `bootscreen.js` — the startup overlay: an ASCII bastion banner shown over the terminal
+  until a shell prompt appears, at which point it clears the guest screen and reveals a clean
+  prompt. Hides all SeaBIOS/kernel/systemd output.
+- `serialfs.js` — Save/Load of the user's home directory. The engine's real filesystem
+  lives in the wasm worker where page JavaScript cannot see it, so transfers ride the serial
+  console: the guest tars its home to base64 between `BWT-BEGIN`/`BWT-END` sentinels; the page
+  decodes to a downloaded `.tgz` and a browser (OPFS) copy. Behind a progress overlay.
+- `toolchain-extra.dockerfile` — layers xterm-pty into the engine's build image.
+- `xterm-pty.conf` — the COOP/COEP response headers cross-origin isolation requires.
 
-- `-sEXPORT_ES6=1` — `qemu-system-x86_64` (our `out.js`) is an **ES module** exporting a
-  Module factory; load with `import initQemu from './out.js'`.
-- `-sEXPORTED_RUNTIME_METHODS=addFunction,removeFunction,TTY,FS` — the emscripten `FS`
-  object (for staging `/pack` assets and the 9p share) and `TTY` (for terminal wiring) are
-  reachable from the page.
-- `-sPROXY_TO_PTHREAD=1 -pthread` — QEMU runs in a worker; requires cross-origin isolation
-  (`SharedArrayBuffer`), hence the COOP/COEP headers in `xterm-pty.conf`.
-- `-sASYNCIFY=1`, `-sTOTAL_MEMORY=2GB` — initial memory 2 GB; wasm64 (Memory64) leaves
-  room to raise this at build time if the guest needs more.
+## Serving
 
-## Terminal
+Any static host works, but it **must** send:
 
-The plan is xterm.js + xterm-pty against the exported `TTY`, the same wiring the
-ktock/qemu-wasm examples use — their flag set matches this one almost exactly, so those
-examples (`examples/x86_64-alpine/src/htdocs/`) are the working reference.
+```
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
 
-## Planned files
+These enable `SharedArrayBuffer`, which the engine's threads depend on. On a host that cannot
+set headers (e.g. plain GitHub Pages), ship `coi-serviceworker.js` instead. Cross-origin asset
+fetches (e.g. disks from object storage) must also satisfy CORS under COEP.
 
-- `module.js` — QEMU arguments: drives, virtfs, memory, machine
-- `persist.js` — emscripten FS ↔ OPFS sync for the 9p-shared home directory
-- `backup.js` — export/import of the home directory as a downloadable archive
+## Notes for anyone scraping the serial output
+
+The guest image ships Ubuntu 26.04, which enables shell integration by default: OSC 3008
+sequences bracket every command's output. Any code reading the serial stream must strip OSC
+sequences, not just CSI. The pages expose `window.__serial`, `window.__paste`, and
+`window.__xterm` for tests.

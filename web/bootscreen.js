@@ -1,5 +1,5 @@
 // Boot / restore screen: cover the terminal with the bashtion banner while
-// the VM starts, so the student never sees SeaBIOS/kernel/systemd noise, then
+// the VM starts, so you never see SeaBIOS/kernel/systemd noise, then
 // clear the scrollback and reveal a clean prompt once the shell is ready.
 'use strict';
 

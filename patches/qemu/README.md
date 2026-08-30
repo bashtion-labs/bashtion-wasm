@@ -1,5 +1,7 @@
 # QEMU patches
 
+> These patches serve the **experimental** upstream/TCI lane (`third_party/qemu`, built by `wasm64-experimental.yml`). The shipped engine is the ktock fork — see `../fork/`.
+
 Applied at build time to a copy of `third_party/qemu` (or in CI, to the checkout before
 configure). The submodule itself stays pristine. Regenerate with `git diff` inside the
 QEMU tree; verify with `git apply --check` against the pinned tag before committing.

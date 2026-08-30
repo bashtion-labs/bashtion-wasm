@@ -206,6 +206,11 @@ RUN mkdir -p /rootfs/etc/systemd/system.conf.d && printf '%s\n' \
       'RuntimeWatchdogSec=0' \
       > /rootfs/etc/systemd/system.conf.d/slow-emulation.conf
 
+# virtio_rng must load in systemd-modules-load, NOT via udev coldplug: udev
+# itself stalls on uninitialized-crng getrandom(), a circular dependency
+# observed live (udev-trigger 10min+ while modules-load finished in seconds).
+RUN printf 'virtio_rng\n' > /rootfs/etc/modules-load.d/bashtion-entropy.conf
+
 # serial console autologin-free getty; console on ttyS0
 RUN chroot /rootfs systemctl enable serial-getty@ttyS0.service
 # Under TCI each generator costs ~8s and systemd's sandboxed-generator batch

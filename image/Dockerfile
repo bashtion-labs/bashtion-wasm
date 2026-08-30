@@ -189,6 +189,24 @@ RUN for u in systemd-networkd.service systemd-networkd-wait-online.service \
              setvtrgb.service; do \
       chroot /rootfs systemctl mask $u >/dev/null 2>&1 || true; \
     done
+# Watchdogs and timeouts, tuned for a 10-30x interpreter. journald and udevd
+# ship WatchdogSec=3min and miss their keepalives under TCI, so systemd kills
+# and restarts them in a loop (observed live: repeated journald failures
+# during boot). Zero the per-service watchdogs and RAISE default unit
+# timeouts - on slow hardware a legitimately slow unit must not be killed.
+RUN for svc in systemd-journald systemd-udevd; do \
+      mkdir -p /rootfs/etc/systemd/system/$svc.service.d && \
+      printf '[Service]\nWatchdogSec=0\n' \
+        > /rootfs/etc/systemd/system/$svc.service.d/no-watchdog.conf; \
+    done
+RUN mkdir -p /rootfs/etc/systemd/system.conf.d && printf '%s\n' \
+      '[Manager]' \
+      'DefaultTimeoutStartSec=20min' \
+      'DefaultTimeoutStopSec=5min' \
+      'DefaultDeviceTimeoutSec=20min' \
+      'RuntimeWatchdogSec=0' \
+      > /rootfs/etc/systemd/system.conf.d/slow-emulation.conf
+
 # serial console autologin-free getty; console on ttyS0
 RUN chroot /rootfs systemctl enable serial-getty@ttyS0.service
 # Under TCI each generator costs ~8s and systemd's sandboxed-generator batch

@@ -282,11 +282,16 @@ made it into the deploy.
   http.request.uri.path in {"/qemu-system-x86_64.wasm" "/load-rootfsB.data" "/load-state.data"}
   ```
 
-  Set **the same characteristics = IP** (the only per-IP option on free), enable
-  **"Also apply rate limiting to cached assets"** (Cache status) so it always
-  fires, then **When rate exceeds = 50 requests / 10 seconds**, **action =
-  Block**. Free-plan limits: **one** rule per zone, counting period and block
-  duration both **fixed at 10 s**, IP-only characteristic, Block returns HTTP 429.
+  Set **the same characteristics = IP** (the only per-IP option on free), then
+  **When rate exceeds = 50 requests / 10 seconds**, **action = Block**. Free-plan
+  limits: **one** rule per zone, counting period and block duration both **fixed
+  at 10 s**, IP-only characteristic, Block returns HTTP 429.
+
+  You will **not** see a **Cache status** / "Also apply rate limiting to cached
+  assets" control — it is a **Business+** feature, hidden on Free/Pro, where it
+  defaults to counting cached assets too. That is fine: rate limiting runs before
+  the cache and the Worker, and these files are Worker-served (dynamic), so every
+  request is counted regardless. Skip it.
 
   Threshold reasoning: a cold browser load fetches each big file once (~3
   requests), so 50 / 10 s allows ~16 simultaneous cold loads from one IP and

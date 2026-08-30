@@ -145,19 +145,19 @@ patches remain in-tree: if upstream ever merges a JIT backend, the A/B harness r
 
 ## Status
 
-**Proven.** On the fork JIT engine, the guest reaches a root shell in ~25 s (kernel init)
-and the full storage-administration sequence — pvcreate, vgcreate, lvcreate, mkfs.ext4,
-mount, write, unmount, remount, read-back — completes against the second virtio disk in
-~10 s more, all in a stock Chromium tab served from static files (runtime-computed output
-markers; full serial transcript retained). Full-systemd boot on the same engine reaches
-the login prompt in 6m18s, deterministically.
+**Working, end to end, on Ubuntu 26.04 LTS (resolute) / Linux 7.0.**
 
-**Known open issue:** the fork-era emscripten-pty's blocking-read wake fails after the
-first read in some paths — measured as login(1)'s echo-off password read never completing
-("Login timed out after 60 seconds" with the username delivered fine) and as bash's
-readline/bracketed-paste swallowing pasted newlines. dash consumes pasted input reliably.
-Root fix: port xterm-pty 0.12.0's poll/read repairs to the fork engine's linked
-emscripten-pty. Serial-console autologin is baked in regardless (kiosk-appropriate).
+Measured on the shipped stack (fork JIT engine, CI artifacts, localhost assets):
+
+- **Restore to a logged-in prompt: 12.8 s** from page load (the engine leaves restored
+  state paused; the page issues monitor `cont` automatically). Interactive round-trip at
+  15.0 s; `sudo` LVM (pvcreate → vgcreate → lvcreate) green at 39 s, passwordless.
+- Fresh full-systemd boot to the autologin shell: ~9.5 min wall (guest clock: 15.5 s
+  kernel + 8 min 52 s userspace) — which is why the snapshot flow is the student path.
+- Input verified on both flows: the backported fd_read fix delivers pasted bytes into
+  armed readline; pasted newlines execute (bracketed paste disabled in the image).
+- Storage persistence across unmount/remount proven (noble run: full chain in 35 s from
+  page load under dash-init; resolute: LVM chain green in the restored session).
 
 Previous status:
 **Builds.** Upstream QEMU v11.1.1 compiles to wasm64 with virtfs enabled (the patch set in

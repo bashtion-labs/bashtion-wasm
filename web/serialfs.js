@@ -31,10 +31,25 @@ const SERIALFS = (() => {
     tick();
   });
 
+  // Confirm a live shell before pasting a capture command: a click during
+  // boot/restore, or with a half-typed line, otherwise lands in a not-ready
+  // console and hangs out the whole timeout with no file.
+  async function ensureShell() {
+    const t0 = serialLen();
+    paste('\x15\n');                 // Ctrl-U clears any partial line, then Enter
+    const m = await waitFor(/[$#] ?$/m, t0, 8000);
+    return !!m;
+  }
+
   async function exportWork() {
     if (busy) return null;
     busy = true;
     try {
+      status('checking the shell…');
+      if (!await ensureShell()) {
+        status('click into the terminal and wait for the $ prompt, then try again');
+        return null;
+      }
       status('packing your work…');
       const t0 = serialLen();
       // stty -echo keeps the payload from being doubled by tty echo
@@ -52,6 +67,10 @@ const SERIALFS = (() => {
     if (busy) return false;
     busy = true;
     try {
+      if (!await ensureShell()) {
+        status('click into the terminal and wait for the $ prompt, then try again');
+        return false;
+      }
       status('restoring ' + (bytes.length / 1024 | 0) + ' KB…');
       let b64 = '';
       for (let i = 0; i < bytes.length; i += 0x8000) {

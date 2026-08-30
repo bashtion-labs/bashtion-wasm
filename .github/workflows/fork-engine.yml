@@ -23,6 +23,8 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/ktock/qemu-wasm.git fork
           cd fork && git rev-parse HEAD
+          # configure-era submodules; meson also git-inits wraps into the tree
+          git submodule update --init --depth 1 || true
 
       - name: Patch fork toolchain (zlib.net URL rotted after 1.3.2 shipped)
         run: |
@@ -45,7 +47,9 @@ jobs:
 
       - name: Build qemu-system-x86_64 (wasm32 + JIT), fork flags verbatim
         run: |
-          docker run --rm -d --name forkbuild -v "$PWD/fork:/qemu/:ro" fork-toolchain:ci
+          # rw mount: meson writes wrap checkouts and mkvenv egg-info into the tree
+          docker run --rm -d --name forkbuild -v "$PWD/fork:/qemu/" fork-toolchain:ci
+          docker exec forkbuild git config --global --add safe.directory '*'
           EXTRA_CFLAGS="-O3 -g -Wno-error=unused-command-line-argument -matomics -mbulk-memory -DNDEBUG -DG_DISABLE_ASSERT -D_GNU_SOURCE -sASYNCIFY=1 -pthread -sPROXY_TO_PTHREAD=1 -sFORCE_FILESYSTEM -sALLOW_TABLE_GROWTH -sTOTAL_MEMORY=2300MB -sWASM_BIGINT -sMALLOC=mimalloc --js-library=/build/node_modules/xterm-pty/emscripten-pty.js -sEXPORT_ES6=1 -sASYNCIFY_IMPORTS=ffi_call_js"
           docker exec forkbuild emconfigure /qemu/configure --static --target-list=x86_64-softmmu --cpu=wasm32 --cross-prefix= \
             --without-default-features --enable-system --with-coroutine=fiber --enable-virtfs \

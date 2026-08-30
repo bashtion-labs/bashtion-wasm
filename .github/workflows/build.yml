@@ -67,8 +67,7 @@ jobs:
           docker exec -w /build bashtion-build emconfigure /qemu/configure \
             --static --cpu=wasm64 --target-list=x86_64-softmmu \
             --cross-prefix= --without-default-features \
-            --enable-system --enable-tcg-interpreter --disable-tools --enable-virtfs \
-            --extra-ldflags="--js-library=/build/node_modules/xterm-pty/emscripten-pty.js"
+            --enable-system --enable-tcg-interpreter --disable-tools --enable-virtfs
           docker exec -w /build bashtion-build emmake make -j"$(nproc)"
           docker exec bashtion-build sh -c 'ls -la /build/qemu-system-x86_64*'
           mkdir -p out/htdocs

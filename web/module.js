@@ -9,7 +9,7 @@
 globalThis.Module = {
     arguments: [
         '-nographic', '-M', 'pc', '-cpu', 'qemu64', '-smp', '1',
-        '-m', '768M', '-accel', 'tcg,tb-size=256',
+        '-m', '512M', '-accel', 'tcg,tb-size=128',
         '-L', '/pack-rom/',
         '-nic', 'none',
         '-kernel', '/pack-kernel/vmlinuz',

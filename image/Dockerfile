@@ -1,6 +1,6 @@
 # syntax = docker/dockerfile:1.5
 #
-# Guest image: Ubuntu 24.04 (noble) amd64 rootfs + Ubuntu's own kernel, built
+# Guest image: Ubuntu 26.04 LTS (resolute) amd64 rootfs + Ubuntu's own kernel, built
 # for qemu-system-x86_64 running under wasm (TCI, no KVM, no network).
 #
 # Design decisions (see repo README and patches/ for background):
@@ -17,13 +17,13 @@
 # - The second disk (vdb) ships as a raw empty image: no partition table, no
 #   filesystem - partitioning it is the user's exercise.
 
-ARG SUITE=noble
+ARG SUITE=resolute
 # snapshot.ubuntu.com timestamp: every apt source below resolves through this,
 # so the build cannot drift or rot. Bump deliberately.
 ARG SNAPSHOT=20260820T000000Z
 ARG MIRROR=https://snapshot.ubuntu.com/ubuntu/${SNAPSHOT}
 
-FROM --platform=linux/amd64 ubuntu:24.04 AS builder
+FROM --platform=linux/amd64 ubuntu:26.04 AS builder
 ARG SUITE
 ARG MIRROR
 ENV DEBIAN_FRONTEND=noninteractive

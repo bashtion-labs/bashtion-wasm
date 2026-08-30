@@ -80,6 +80,14 @@ at build time; the submodule is never modified in place.
   will take it with it, so an explicit export/import of the home directory to a file is a
   first-class feature, not a convenience.
 
+## Startup
+
+The VM boot (SeaBIOS, kernel, systemd) is hidden behind a full-screen bashtion banner —
+an ASCII bastion with a `$_` prompt, the wordmark, and "starting your environment…" — until
+the shell is ready, at which point the scrollback is cleared and a clean `user@bashtion:~$`
+is revealed. A student never sees the boot noise. On the snapshot-restore path the banner
+lifts in ~13-15 s. See `web/bootscreen.js`.
+
 ## Layout
 
 ```

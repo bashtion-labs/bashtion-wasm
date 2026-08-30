@@ -164,7 +164,10 @@ Measured on the shipped stack (fork JIT engine, CI artifacts, localhost assets):
   browser-only button was dropped as redundant (and least reliable on the managed devices
   this serves, which can wipe browser storage — the downloaded file is the real safety net).
   Both buttons confirm a live shell before capturing, so a click during boot fails fast with
-  guidance instead of hanging.
+  guidance instead of hanging. The raw transfer (a base64 tar streaming over the tty) is
+  hidden behind a progress overlay and the scrollback is cleared afterwards, so the student
+  sees only "Saving your work…" / "Restoring your work…" and a completion message, never the
+  base64 - verified (no long base64 run remains in the terminal after either operation).
 - Storage persistence across unmount/remount proven (noble run: full chain in 35 s from
   page load under dash-init; resolute: LVM chain green in the restored session).
 

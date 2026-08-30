@@ -75,7 +75,7 @@
       xterm.open(document.getElementById('terminal'));
       const { master, slave } = openpty();
       xterm.loadAddon(master);
-      window.__serial = ''; window.__paste = (t) => xterm.paste(t);
+      window.__serial = ''; window.__paste = (t) => xterm.paste(t); window.__xterm = xterm;
       master.onWrite(([buf]) => { window.__serial += new TextDecoder().decode(buf); });
       Module.pty = slave;
       Module.mainScriptUrlOrBlob = new URL('./out.js', location.href).href;

@@ -154,7 +154,8 @@ COPY seed/ /seed/
 RUN set -e; \
     echo bashtion > /rootfs/etc/hostname; \
     printf '127.0.0.1\tlocalhost\n127.0.1.1\tbashtion\n' > /rootfs/etc/hosts; \
-    chroot /rootfs systemd-machine-id-setup; \
+    head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n' > /rootfs/etc/machine-id; \
+    echo >> /rootfs/etc/machine-id; \
     chroot /rootfs useradd -m -s /bin/bash -G sudo -u 1000 user; \
     printf 'user ALL=(ALL) NOPASSWD:ALL\n' > /rootfs/etc/sudoers.d/user; \
     chmod 440 /rootfs/etc/sudoers.d/user; \

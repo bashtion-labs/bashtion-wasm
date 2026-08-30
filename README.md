@@ -142,8 +142,27 @@ link step).
 
 Cross-origin isolation is mandatory (`SharedArrayBuffer` backs the engine's threads), so any
 host serving the page must send `Cross-Origin-Opener-Policy: same-origin` and
-`Cross-Origin-Embedder-Policy: require-corp` (see `web/xterm-pty.conf`); on hosts that cannot
-set headers, ship `coi-serviceworker.js`.
+`Cross-Origin-Embedder-Policy: require-corp` (see `web/xterm-pty.conf` for local serving and
+`deploy/_headers` for the Cloudflare deploy); on hosts that cannot set headers, ship
+`coi-serviceworker.js`.
+
+## Deploy (Cloudflare, free tier, hardened)
+
+`deploy/` ships the site on Cloudflare's free plan. The small files (page, JS, kernel, ROM,
+lab disk) are served as static assets; the three large files (`qemu-system-x86_64.wasm`,
+`load-rootfsB.data`, `load-state.data` - each over the 25 MiB static-asset cap) live in a
+**private R2 bucket** and are streamed by a small Worker (`deploy/worker.js`) from the same
+origin. R2's zero egress fees cover the ~1.2 GB per cold load.
+
+The deploy is security-hardened: private bucket (no public / `r2.dev` URL), an allowlist Worker
+(GET/HEAD only, no path-derived keys, generic errors), a strict `Content-Security-Policy` with
+no `'unsafe-inline'` scripts (the page bootstrap is externalized in `web/fork/boot.js` for
+exactly this reason), plus `nosniff`, `Referrer-Policy`, `X-Frame-Options`, a locked-down
+`Permissions-Policy`, and HSTS. The full header set was verified to boot the VM to a shell with
+zero CSP violations.
+
+`make deploy-prep` assembles the static half; **[deploy/README.md](deploy/README.md)** is the
+step-by-step walkthrough.
 
 ## Status
 

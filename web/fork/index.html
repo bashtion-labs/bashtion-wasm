@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>bashtion</title>
+    <link rel="stylesheet" href="./vendor/xterm.css">
+    <style>
+      html, body { height: 100%; margin: 0; background: #111; }
+      #terminal { height: calc(100% - 30px); }
+      #status { color: #9a9a9a; font: 13px system-ui; padding: 6px 10px; height: 18px; }
+    </style>
+  </head>
+  <body>
+    <!--
+      This page carries NO inline scripts and NO inline event handlers, so it
+      runs under a strict Content-Security-Policy (script-src 'self'
+      'wasm-unsafe-eval'; no 'unsafe-inline'). The bootstrap lives in boot.js;
+      button wiring is done there too. Keep it that way, or the CSP in
+      deploy/_headers must be relaxed. See deploy/README.md.
+    -->
+    <div id="status">loading bundles…</div>
+    <div id="controls" style="position:fixed;top:4px;right:8px;font:12px system-ui;color:#9a9a9a">
+      <span id="sfsStatus" style="margin-right:8px"></span>
+      <button id="exportBtn">Download my work</button>
+      <label><input type="file" id="importInp" hidden>
+        <button id="loadBtn">Load work</button></label>
+    </div>
+    <div id="terminal"></div>
+    <script src="./serialfs.js"></script>
+    <script src="./bootscreen.js"></script>
+    <script src="./module.js"></script>
+    <script src="./load-rom.js"></script>
+    <script src="./load-kernel.js"></script>
+    <script src="./load-rootfsB.js"></script>
+    <script src="./load-state.js"></script>
+    <script src="./load-lab.js"></script>
+    <script src="./vendor/xterm.js"></script>
+    <script src="./vendor/xterm-pty.js"></script>
+    <script type="module" src="./boot.js"></script>
+  </body>
+</html>

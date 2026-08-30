@@ -81,8 +81,9 @@ for f in "${BIG[@]}"; do
     printf '  # %-26s %4d MiB  (single PUT)\n' "$f" "$mib"
     printf '  npx wrangler r2 object put bashtion-assets/%s \\\n      --file %s --remote\n\n' "$f" "$SRC/$f"
   else
-    printf '  # %-26s %4d MiB  (exceeds wrangler 300 MiB PUT — use rclone, see deploy/README.md)\n' "$f" "$mib"
-    printf '  rclone copyto %s r2:bashtion-assets/%s --s3-chunk-size 64M\n\n' "$SRC/$f" "$f"
+    printf '  # %-26s %4d MiB  (exceeds wrangler 300 MiB PUT — use rclone; see deploy/README.md Step 4)\n' "$f" "$mib"
+    printf '  #   needs an rclone R2 remote configured with no_check_bucket=true for a bucket-scoped token\n'
+    printf '  rclone copy %s r2:bashtion-assets/ --s3-upload-cutoff=100M --s3-chunk-size=100M --progress\n\n' "$SRC/$f"
   fi
 done
 echo "Then deploy the Worker + static assets:"

@@ -124,44 +124,74 @@ npx wrangler r2 object put bashtion-assets/load-state.data \
     --file out/gate1/htdocsF/load-state.data --remote
 ```
 
-## Step 4 — Upload the rootfs (multipart, scoped credential)
+## Step 4 — Upload the rootfs (multipart) with a least-privilege token
 
 `wrangler r2 object put` uses a single request (~300 MiB ceiling); the rootfs is
-~874 MiB, so use a multipart tool with a **least-privilege, temporary** token.
+~874 MiB, so upload it with rclone using a **scoped, temporary** R2 API token.
 
-1. In the dashboard: **R2 → API → Manage API Tokens → Create API Token**.
-   - Permission: **Object Read & Write**.
-   - Scope: **Apply to specific buckets only → `bashtion-assets`**.
-   - TTL: as short as is practical (you only need it for one upload).
-   - Note the **Access Key ID**, **Secret Access Key**, and your account's S3
-     endpoint `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`.
-2. Configure rclone (do **not** commit this config; keep the secret out of the
-   repo and your shell history):
+**4a. Create a bucket-scoped R2 API token (S3 credentials).** In the dashboard,
+go to **Storage & databases → R2 Object Storage** (the R2 Overview page). In the
+**Account Details** panel on the right, click **Manage** next to **API Tokens**
+(the **`{ } API`** button at the top-right opens the same page). This is the
+R2-specific S3-token page — *not* My Profile / Manage Account → API Tokens, which
+issues generic Cloudflare tokens, not the S3 key pair rclone needs. Then:
 
-   ```sh
-   rclone config create r2 s3 \
-     provider=Cloudflare \
-     access_key_id=<ACCESS_KEY_ID> \
-     secret_access_key=<SECRET_ACCESS_KEY> \
-     endpoint=https://<ACCOUNT_ID>.r2.cloudflarestorage.com \
-     acl=private
-   ```
-3. Upload:
+1. **Create API token** → **Create Account API token** (belongs to the account,
+   survives user removal — needs the Super Administrator role) or **Create User
+   API token** for a personal credential.
+2. Name it, e.g. `bashtion-assets-upload`.
+3. **Permissions:** **Object Read & Write** — only the two *Object* tiers can be
+   bucket-scoped; the *Admin* tiers always cover every bucket in the account.
+4. **Bucket scope:** **Apply to specific buckets only → `bashtion-assets`** (leave
+   all others unselected).
+5. *(Optional)* set a short **TTL** and/or a client-IP allowlist.
+6. **Create**, then copy the **Access Key ID** and **Secret Access Key** now —
+   the Secret is shown **once only**. (Ignore the separate bearer "Token value";
+   rclone does not use it.)
 
-   ```sh
-   rclone copyto out/gate1/htdocsF/load-rootfsB.data \
-     r2:bashtion-assets/load-rootfsB.data --s3-chunk-size 64M --progress
-   ```
-4. **Rotate or delete the token now** (dashboard → the token → Roll/Delete), and
-   `rclone config delete r2`. The running site does not use it — only the Worker
-   binding, which needs no key.
+Your **Account ID** is in the R2 Account Details panel (and inside the endpoint
+URL printed on the confirmation page). Endpoint:
+`https://<ACCOUNT_ID>.r2.cloudflarestorage.com` — use the `.eu` / `.fedramp` /
+`.us` variant only if the bucket was created with that jurisdiction.
 
-Confirm all three objects are present:
+**4b. Configure rclone** (do **not** commit this config; keep the secret out of
+the repo and your shell history):
 
 ```sh
-npx wrangler r2 object get bashtion-assets/load-rootfsB.data --remote 2>&1 | head -c 0 && echo ok
-npx wrangler r2 bucket list
+rclone config create r2 s3 \
+  provider=Cloudflare \
+  access_key_id=<ACCESS_KEY_ID> \
+  secret_access_key=<SECRET_ACCESS_KEY> \
+  region=auto \
+  endpoint=https://<ACCOUNT_ID>.r2.cloudflarestorage.com \
+  acl=private \
+  no_check_bucket=true
 ```
+
+`no_check_bucket=true` is **required** for a bucket-scoped token: it cannot list
+or create buckets, so rclone's default pre-flight bucket check would otherwise
+fail. (Cloudflare's own example omits it and uses the interactive `rclone
+config` wizard — provider `Cloudflare`, region `auto`, that endpoint — which
+yields the same `[r2]` remote.)
+
+**4c. Upload (multipart):**
+
+```sh
+rclone copy out/gate1/htdocsF/load-rootfsB.data r2:bashtion-assets/ \
+  --s3-upload-cutoff=100M --s3-chunk-size=100M --progress
+```
+
+This stores it as `r2:bashtion-assets/load-rootfsB.data`.
+
+**4d. Confirm all three objects landed, then retire the token:**
+
+```sh
+rclone lsl r2:bashtion-assets/     # should list wasm + state + rootfs
+```
+
+Then delete the token in **R2 → Account Details → Manage API tokens → ⋯ →
+Delete** (or **Roll** to rotate the secret), and `rclone config delete r2`. The
+running site never uses it — only the Worker's binding, which needs no key.
 
 ## Step 5 — Deploy the Worker + static assets
 

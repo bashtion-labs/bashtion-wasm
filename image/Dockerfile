@@ -71,9 +71,13 @@ RUN mkdir -p /rootfs/etc/dpkg/dpkg.cfg.d && printf '%s\n' \
       > /rootfs/etc/dpkg/dpkg.cfg.d/90-bashtion-trim
 RUN chroot /rootfs apt-get update && \
     chroot /rootfs apt-get install -y --no-install-recommends linux-image-virtual
+# 26.04 dropped linux-modules-extra as a separate package for its 7.x kernel;
+# install it where it exists, and let the module-closure assertions below be
+# the arbiter of whether anything required is actually missing.
 RUN KVER=$(ls /rootfs/lib/modules | sort -V | tail -1) && echo "KVER=$KVER" && \
-    chroot /rootfs apt-get install -y --no-install-recommends \
-      linux-modules-extra-${KVER} && \
+    (chroot /rootfs apt-get install -y --no-install-recommends \
+      linux-modules-extra-${KVER} \
+     || echo "no modules-extra package for ${KVER}; assertions will verify") && \
     echo "$KVER" > /kver
 # kernel out for QEMU's -kernel
 RUN mkdir -p /out && cp /rootfs/boot/vmlinuz-$(cat /kver) /out/vmlinuz && \

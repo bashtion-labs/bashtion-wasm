@@ -1,0 +1,81 @@
+name: wasm64-experimental
+
+# Upstream QEMU wasm64/TCI lane, kept for A/B re-runs if upstream ever merges
+# a JIT backend. Measured unfit as of v11.1.1: guest services freeze under
+# TCI (README verdict table). Manual dispatch only.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qemu-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: docker/setup-buildx-action@v3
+
+      # The toolchain stage builds zlib/glib/pixman/libffi under emscripten and
+      # dominates build time. The org does not allow the workflow token to create
+      # GHCR packages ("installation not allowed to Create organization package"),
+      # so the image is built into the local daemon and layers are cached in the
+      # GHA cache instead — no registry involved.
+      - name: Prepare patched toolchain Dockerfile
+        run: |
+          mkdir -p out/toolchain/tests/docker/dockerfiles
+          cp third_party/qemu/tests/docker/dockerfiles/emsdk-wasm64-cross.docker \
+             out/toolchain/tests/docker/dockerfiles/
+          for p in patches/toolchain/*.patch; do
+            echo "applying $p"
+            patch -p1 -d out/toolchain < "$p"
+          done
+
+      - name: Build toolchain image
+        uses: docker/build-push-action@v6
+        with:
+          context: out/toolchain
+          file: out/toolchain/tests/docker/dockerfiles/emsdk-wasm64-cross.docker
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: bashtion-toolchain:base
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Add xterm-pty to toolchain
+        run: docker build --build-arg BASE=bashtion-toolchain:base -t bashtion-toolchain:ci -f web/toolchain-extra.dockerfile web/
+
+      - name: Apply QEMU patches to a working copy
+        run: |
+          cp -R third_party/qemu out/qemu-src
+          cd out/qemu-src
+          for p in ../../patches/qemu/*.patch; do
+            echo "applying $p"
+            git apply "$p"
+          done
+
+      - name: Configure and build qemu-system-x86_64 (wasm64)
+        run: |
+          docker run --rm -d --name bashtion-build \
+            -v "$PWD/out/qemu-src:/qemu/" \
+            bashtion-toolchain:ci sleep infinity
+          docker exec -w /build bashtion-build emconfigure /qemu/configure \
+            --static --cpu=wasm64 --target-list=x86_64-softmmu \
+            --cross-prefix= --without-default-features \
+            --enable-system --enable-tcg-interpreter --disable-tools --enable-virtfs
+          docker exec -w /build bashtion-build emmake make -j"$(nproc)"
+          docker exec bashtion-build sh -c 'ls -la /build/qemu-system-x86_64*'
+          mkdir -p out/htdocs
+          docker exec bashtion-build sh -c 'cd /build && tar cf - qemu-system-x86_64*' | tar xf - -C out/htdocs
+          mv out/htdocs/qemu-system-x86_64 out/htdocs/out.js 2>/dev/null || true
+          docker rm -f bashtion-build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qemu-wasm64
+          path: out/htdocs/
+          retention-days: 14

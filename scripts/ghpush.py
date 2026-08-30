@@ -35,10 +35,17 @@ def main():
 
     head = gh([f"repos/{owner_repo}/git/ref/heads/main"])["object"]["sha"]
 
-    # staged entries (mode, sha-unused, path) — read content from the index
+    # staged entries — read content from the index; deletions become null-sha
     entries = []
+    status = {}
+    parts = sh("git", "diff", "--cached", "--name-status", "-z").split("\0")
+    for i in range(0, len(parts) - 1, 2):
+        status[parts[i + 1]] = parts[i]
     for line in sh("git", "diff", "--cached", "--name-only", "-z").split("\0"):
         if not line:
+            continue
+        if status.get(line, "").startswith("D"):
+            entries.append({"path": line, "mode": "100644", "type": "blob", "sha": None})
             continue
         mode = sh("git", "ls-files", "--cached", "--format=%(objectmode)", "--", line).strip()
         if mode == "160000":

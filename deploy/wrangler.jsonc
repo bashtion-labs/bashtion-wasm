@@ -1,0 +1,29 @@
+{
+  // bashtion-wasm — Cloudflare Workers deploy (free tier).
+  //
+  // Static Assets serve the small files in ./public (page, JS, kernel, ROM,
+  // lab disk) directly. The three large files are NOT in ./public, so requests
+  // for them fall through to worker.js, which streams them from the private R2
+  // bucket bound as BUCKET. See deploy/README.md.
+  "name": "bashtion",
+  "main": "worker.js",
+
+  // Pin to the day you first deploy (any recent date is fine).
+  "compatibility_date": "2026-08-30",
+
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+
+  "r2_buckets": [
+    {
+      "binding": "BUCKET",
+      "bucket_name": "bashtion-assets"
+    }
+  ],
+
+  "observability": {
+    "enabled": true
+  }
+}

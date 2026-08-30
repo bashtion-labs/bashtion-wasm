@@ -12,7 +12,7 @@ HTDOCS        := $(OUT)/htdocs
 TOOLCHAIN_DOCKERFILE := $(QEMU_SRC)/tests/docker/dockerfiles/emsdk-wasm64-cross.docker
 EMSDK_VERSION ?=
 
-.PHONY: all toolchain qemu image snapshot serve clean builder-up builder-down
+.PHONY: all toolchain qemu image snapshot serve deploy-prep clean builder-up builder-down
 
 all: qemu image
 
@@ -93,6 +93,12 @@ serve:
 	  -v "$(CURDIR)/web/xterm-pty.conf:/usr/local/apache2/conf/extra/xterm-pty.conf:ro" \
 	  --entrypoint=/bin/sh httpd -c \
 	  'echo "Include conf/extra/xterm-pty.conf" >> /usr/local/apache2/conf/httpd.conf && httpd-foreground'
+
+## Assemble deploy/public/ from a built htdocs dir for the Cloudflare deploy
+## (see deploy/README.md). Override the source: make deploy-prep HTDOCS_BUILT=DIR
+HTDOCS_BUILT ?= $(OUT)/gate1/htdocsF
+deploy-prep:
+	./deploy/split.sh $(HTDOCS_BUILT)
 
 clean: builder-down
 	rm -rf $(OUT)

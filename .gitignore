@@ -23,3 +23,8 @@ load-*.js
 
 # Local reference checkout only (design uses upstream third_party/qemu)
 /third_party/qemu-wasm/
+
+# Generated deploy staging (assembled by deploy/split.sh)
+/deploy/public/
+# rclone/wrangler local state should never be committed
+.wrangler/

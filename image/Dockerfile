@@ -152,6 +152,8 @@ RUN set -e; \
     printf '127.0.0.1\tlocalhost\n127.0.1.1\tbashtion\n' > /rootfs/etc/hosts; \
     chroot /rootfs systemd-machine-id-setup; \
     chroot /rootfs useradd -m -s /bin/bash -G sudo -u 1000 user; \
+    printf 'user ALL=(ALL) NOPASSWD:ALL\n' > /rootfs/etc/sudoers.d/user; \
+    chmod 440 /rootfs/etc/sudoers.d/user; \
     echo 'user:changeme' | chroot /rootfs chpasswd; \
     echo 'root:root' | chroot /rootfs chpasswd
 # fstab: root passno 0 (no initramfs fsck path); 9p share is optional at boot
@@ -221,6 +223,12 @@ RUN printf 'virtio_rng\n' > /rootfs/etc/modules-load.d/bashtion-entropy.conf
 RUN mkdir -p /rootfs/etc/systemd/system/serial-getty@ttyS0.service.d && \
     printf '[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin user --keep-baud 115200,57600,38400,9600 %%I $TERM\n' \
       > /rootfs/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf
+# Readline: execute pasted newlines. Bracketed paste makes a pasted lab
+# command sit highlighted awaiting Enter, which reads as broken to students
+# (and to automation). Verified live: with the pty read fix, pastes deliver
+# and display; this makes them run.
+RUN printf 'set enable-bracketed-paste off\n' >> /rootfs/etc/inputrc
+
 RUN chroot /rootfs systemctl enable serial-getty@ttyS0.service
 # Under TCI each generator costs ~8s and systemd's sandboxed-generator batch
 # has a hard 90s internal deadline (SIGALRM -> "Protocol error" -> "Freezing

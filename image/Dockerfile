@@ -161,6 +161,20 @@ RUN set -e; \
     chmod 440 /rootfs/etc/sudoers.d/user; \
     echo 'user:changeme' | chroot /rootfs chpasswd; \
     echo 'root:root' | chroot /rootfs chpasswd
+# Stock Ubuntu puts the first user in adm; without it journalctl exits 1 and,
+# piped into anything, the permission error goes to stderr while the pipeline
+# prints a completely believable "0". Nothing on screen contradicts it.
+# systemd-journal is granted the same read access and is added where present.
+RUN set -e; \
+    chroot /rootfs usermod -aG adm user; \
+    if chroot /rootfs getent group systemd-journal >/dev/null; then \
+      chroot /rootfs usermod -aG systemd-journal user; \
+    else echo "note: no systemd-journal group in this suite"; fi; \
+    groups=$(chroot /rootfs id -Gn user); echo "user groups: $groups"; \
+    for g in sudo adm; do \
+      echo "$groups" | tr ' ' '\n' | grep -qx "$g" || \
+        { echo "FATAL: user is not in $g"; exit 1; }; \
+    done
 # fstab: root passno 0 (no initramfs fsck path); 9p share is optional at boot
 RUN printf '%s\n' \
       '/dev/vda / ext4 defaults,errors=remount-ro 0 0' \

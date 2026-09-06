@@ -374,12 +374,44 @@ RUN set -e; \
 RUN du -x --max-depth=2 --block-size=1M /rootfs 2>/dev/null | sort -rn | head -25
 
 # ------------------------------------------------------------- disk images
-# root: measured content + headroom for user-created files
-RUN size_kb=$(du -s --block-size=1024 /rootfs | cut -f1); \
-    size_mb=$(( size_kb / 1024 * 108 / 100 + 64 )); \
-    echo "rootfs ${size_mb}M"; \
-    mke2fs -q -t ext4 -J size=16 -L bashtion-root -d /rootfs -b 4096 \
+# root: measured content + a real free-space TARGET.
+#
+# The old sizing was content x1.08 + 64 MB. ext4's own metadata (inode tables,
+# journal, group descriptors) and the default 5% root reserve then ate most of
+# that, and the image shipped 95% full with ~46 MB free - not enough for
+# ordinary work, and the reason `fallocate -l 10G` gets far enough to leave an
+# 85 MB stub before failing and takes the disk to 100%.
+#
+# Size for content PLUS a stated free-space target, and drop the root reserve
+# to 1%: this is a single-user disposable VM, and 5% held back ~40 MB for a
+# fsck that has nowhere to run. The ceiling is real - the whole rootfs image is
+# resident in the wasm heap (-sTOTAL_MEMORY=2300MB, shared with 512 MB of guest
+# RAM and the 128 MB TB cache) - so FREE_MB is a deliberate balance and
+# /dev/vdb (1 GB, qcow2, grows on write) is the place for anything large.
+ARG FREE_MB=192
+RUN set -e; content_mb=$(( $(du -s --block-size=1024 /rootfs | cut -f1) / 1024 )); \
+    size_mb=$(( (content_mb + ${FREE_MB}) * 108 / 100 )); \
+    echo "rootfs: ${content_mb}M content + ${FREE_MB}M target -> ${size_mb}M volume"; \
+    mke2fs -q -t ext4 -J size=16 -m 1 -L bashtion-root -d /rootfs -b 4096 \
       /out/rootfs.ext4 ${size_mb}M
+# ...and prove it, in the units df will report to the user.
+RUN python3 - <<'PYEOF'
+import re, subprocess, sys
+out = subprocess.run(['dumpe2fs', '-h', '/out/rootfs.ext4'],
+                     capture_output=True, text=True).stdout
+def field(name):
+    m = re.search(r'^%s:\s+(\d+)\s*$' % name, out, re.M)
+    if not m:
+        raise SystemExit('FATAL: dumpe2fs did not report %r' % name)
+    return int(m.group(1))
+total, free = field('Block count'), field('Free blocks')
+resv, bs = field('Reserved block count'), field('Block size')
+avail_mb = (free - resv) * bs // 1048576
+print('rootfs: %d MiB available to the user, %d%% full'
+      % (avail_mb, (total - free) * 100 // total))
+if avail_mb < 150:
+    raise SystemExit('FATAL: only %d MiB free on /' % avail_mb)
+PYEOF
 # verify the capability xattr survived mke2fs -d
 RUN debugfs -R 'ea_list /usr/bin/ping' /out/rootfs.ext4 2>/dev/null | \
       grep -q security.capability || { echo "FATAL: cap xattr lost in ext4"; exit 1; }

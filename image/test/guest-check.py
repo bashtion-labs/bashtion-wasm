@@ -82,23 +82,27 @@ _seq = iter(range(1, 1 << 30))
 def capture(con, cmd, timeout=180):
     """Run one command; return (exit status, its output).
 
-    The guest echoes the command line back before running it, and the previous
-    command's prompt is still unread when this one is sent, so the captured
-    region starts somewhere in the middle of both. Cut at the tail of the
-    echoed line - `echo <tag>=$?` appears there literally and nowhere else.
+    The output has to be found between two markers, not by counting lines. The
+    guest echoes the whole command line back before running it - readline
+    redisplays what it is given whatever the tty's ECHO flag says - and the
+    previous command's prompt is often still unread when this one is sent, so
+    the captured region begins in the middle of both.
+
+    The opening marker is therefore printed in a form that cannot appear in the
+    line that produces it: `printf 'B%sS\\n' CHK7` puts BCHK7S on the wire but
+    never in the echo. (Same trick, same reason, as web/serialfs.js.)
     """
-    tag = 'BCHK%d' % next(_seq)
+    tag = 'CHK%d' % next(_seq)
     start = con.mark()
-    trailer = 'echo %s=$?' % tag
-    con.send('%s; %s\n' % (cmd, trailer))
-    m = con.expect(r'%s=(\d+)' % tag, timeout, start)
+    con.send("printf 'B%%sS\\n' %s; %s; echo B%s=$?\n" % (tag, cmd, tag))
+    m = con.expect(r'B%s=(\d+)' % tag, timeout, start)
     if not m:
         return None, con.text(start)
     body = con.text(start)[:m.start()]
-    i = body.find(trailer)
+    open_marker = 'B%sS' % tag
+    i = body.find(open_marker)
     if i >= 0:
-        body = body[i + len(trailer):]
-    body = body.split('\n', 1)[1] if '\n' in body else ''
+        body = body[i + len(open_marker):]
     return int(m.group(1)), body.strip()
 
 

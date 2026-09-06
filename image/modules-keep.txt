@@ -1,6 +1,12 @@
 # Modules kept in the guest (plus their modules.dep closure); everything else
 # in /lib/modules is pruned at build time. A name missing as both module and
 # builtin fails the build.
+#
+# A `?` prefix means "keep it if this kernel has it". Netfilter in particular
+# keeps folding small expression modules into nf_tables itself (nft_counter
+# went that way), and a name that is now part of the core is neither a module
+# nor listed in modules.builtin. The hard requirements are asserted separately
+# in the Dockerfile, so optional here does not mean unchecked.
 # storage administration
 dm_mod
 dm_snapshot
@@ -28,22 +34,22 @@ ip6_tables
 iptable_filter
 ip6table_filter
 iptable_mangle
-ip6table_mangle
-iptable_nat
-nf_nat
+?ip6table_mangle
+?iptable_nat
+?nf_nat
 nf_conntrack
-nf_defrag_ipv4
-nf_defrag_ipv6
+?nf_defrag_ipv4
+?nf_defrag_ipv6
 nf_tables
 nft_compat
-nft_chain_nat
-nft_counter
-nft_limit
-nft_log
-nft_reject
-nft_reject_ipv4
-nft_reject_ipv6
-nf_log_syslog
+?nft_chain_nat
+?nft_counter
+?nft_limit
+?nft_log
+?nft_reject
+?nft_reject_ipv4
+?nft_reject_ipv6
+?nf_log_syslog
 xt_conntrack
 xt_tcpudp
 xt_limit
@@ -51,14 +57,15 @@ xt_multiport
 xt_addrtype
 xt_comment
 xt_recent
-xt_mark
+?xt_mark
 xt_LOG
 xt_MASQUERADE
 ipt_REJECT
-ip6t_REJECT
+?ip6t_REJECT
 nf_reject_ipv4
-nf_reject_ipv6
+?nf_reject_ipv6
 # misc the labs touch
+?rtc_cmos
 overlay
 autofs4
 binfmt_misc

@@ -111,9 +111,12 @@ for want in open('/modules-keep.txt'):
     want = want.split('#')[0].strip()
     if not want:
         continue
+    # a leading '?' marks a module this kernel is allowed not to have
+    optional, want = (True, want[1:]) if want.startswith('?') else (False, want)
     p = norm(want)
     if p is None:
-        missing.append(want)
+        if not optional:
+            missing.append(want)
         continue
     stack = [p]
     while stack:
@@ -154,6 +157,16 @@ RUN KVER=$(cat /kver); ok=1; \
 
 # ------------------------------------------------------- guest customization
 COPY seed/ /seed/
+# The seed tree is the guest's own files: /usr/local/{sbin,lib}/bashtion, the
+# save/restore helpers the page drives. What a session captures is decided
+# there, in the guest, where it can be read and tested - not in a page string.
+RUN set -e; tar -C /seed -cf - . | tar -C /rootfs -xf -; \
+    chmod 755 /rootfs/usr/local/sbin/bashtion-pack \
+              /rootfs/usr/local/sbin/bashtion-unpack \
+              /rootfs/usr/local/sbin/bashtion-baseline \
+              /rootfs/usr/local/lib/bashtion/state.py; \
+    chroot /rootfs python3 -c 'import py_compile; py_compile.compile("/usr/local/lib/bashtion/state.py", doraise=True)'; \
+    rm -rf /rootfs/usr/local/lib/bashtion/__pycache__
 RUN set -e; \
     echo bashtion > /rootfs/etc/hostname; \
     printf '127.0.0.1\tlocalhost\n127.0.1.1\tbashtion\n' > /rootfs/etc/hosts; \
@@ -199,10 +212,20 @@ RUN set -e; \
 # fstab: root passno 0 (no initramfs fsck path); 9p share is optional at boot
 RUN printf '%s\n' \
       '/dev/vda / ext4 defaults,errors=remount-ro 0 0' \
-      'share0 /home/user/persist 9p trans=virtio,version=9p2000.L,msize=512000,cache=loose,rw,noauto,nofail 0 0' \
+      'share0 /home/user/share 9p trans=virtio,version=9p2000.L,msize=512000,cache=loose,rw,noauto,nofail 0 0' \
       > /rootfs/etc/fstab && \
-    mkdir -p /rootfs/home/user/persist && \
-    chroot /rootfs chown user:user /home/user/persist
+    mkdir -p /rootfs/home/user/share && \
+    printf '%s\n' \
+      'This directory is the mount point for the optional 9p host share' \
+      '(mount tag share0, noauto in /etc/fstab). In the browser there is no' \
+      'host directory behind it, so it stays empty unless you mount it.' \
+      '' \
+      'It used to be called persist, which promised something nothing here' \
+      'does: NOTHING on this machine is saved automatically. Everything in' \
+      'your home directory, this directory included, is saved when - and only' \
+      'when - you use "Download my work".' \
+      > /rootfs/home/user/share/README && \
+    chroot /rootfs chown -R user:user /home/user/share
 # lvm: without this, fresh virtio disks are invisible to pvcreate on noble
 RUN mkdir -p /rootfs/etc/lvm && \
     printf 'devices {\n\tuse_devicesfile = 0\n}\n' > /rootfs/etc/lvm/lvm.conf.d-bashtion.conf 2>/dev/null; \
@@ -421,6 +444,30 @@ RUN set -e; \
 
 # size evidence in the build log: top consumers before the image is cut
 RUN du -x --max-depth=2 --block-size=1M /rootfs 2>/dev/null | sort -rn | head -25
+
+# ---------------------------------------------------------- session baseline
+# Record what the image ships as, so a save can send only what a session
+# actually changed. Without it every save would have to carry all of /etc
+# across a serial console at a few hundred bytes a second. This must be the
+# LAST thing that touches the rootfs, or whatever came after would look
+# "changed" in every session.
+RUN set -e; chroot /rootfs /usr/local/sbin/bashtion-baseline; \
+    lines=$(wc -l < /rootfs/usr/local/lib/bashtion/baseline.tsv); \
+    echo "baseline: ${lines} paths"; \
+    [ "$lines" -gt 100 ] || { echo "FATAL: baseline looks empty"; exit 1; }
+# and prove a round trip works before the image is cut
+RUN set -e; \
+    echo canary > /rootfs/home/user/.bashtion-canary; \
+    chroot /rootfs sh -c '/usr/local/sbin/bashtion-pack > /tmp/probe.tgz 2>/tmp/probe.err'; \
+    cat /rootfs/tmp/probe.err; \
+    sz=$(stat -c %s /rootfs/tmp/probe.tgz); echo "pack probe: ${sz} bytes"; \
+    [ "$sz" -gt 100 ] || { echo "FATAL: bashtion-pack produced nothing"; exit 1; }; \
+    tar tzf /rootfs/tmp/probe.tgz | grep -q '^home/user/.bashtion-canary$' || \
+      { echo "FATAL: pack did not include a home file"; exit 1; }; \
+    tar tzf /rootfs/tmp/probe.tgz | grep -q '^home/user/share/' || \
+      { echo "FATAL: pack excluded the share directory"; exit 1; }; \
+    rm -f /rootfs/tmp/probe.tgz /rootfs/tmp/probe.err /rootfs/home/user/.bashtion-canary; \
+    chroot /rootfs /usr/local/sbin/bashtion-baseline
 
 # ------------------------------------------------------------- disk images
 # root: measured content + a real free-space TARGET.

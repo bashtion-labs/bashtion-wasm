@@ -8,9 +8,13 @@
 #
 # The build artifact's index.html carries an inline script + an inline onclick,
 # which a strict CSP forbids. We deliberately DROP it and drop in the tracked,
-# CSP-clean web/fork/index.html + web/fork/boot.js instead. Everything else
-# (out.js, the load-*.js loaders, the small .data bundles, the pthread worker,
-# vendor/, the serial-fs and boot-screen scripts) is copied verbatim.
+# CSP-clean web/fork/index.html + web/fork/boot.js instead.
+#
+# Every hand-written page script comes from the tracked web/ tree, never from
+# the build output: a build directory is a snapshot of whatever web/ looked
+# like when it was produced, and copying those back silently reverted later
+# fixes. Only the machine-generated half (out.js, the load-*.js loaders, the
+# small .data bundles, the pthread worker, vendor/) is copied from the build.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -21,14 +25,18 @@ PUB="$HERE/public"
 # The three files that exceed the 25 MiB static-asset cap and go to R2 instead.
 BIG=(qemu-system-x86_64.wasm load-rootfsB.data load-state.data)
 # out.wasm is an unused duplicate of qemu-system-x86_64.wasm — never ship it.
-DROP=("${BIG[@]}" out.wasm index.html)
+# The page scripts are dropped from the build copy and taken from web/ below.
+PAGE=(index.html boot.js serialfs.js serialtap.js bootscreen.js module.js)
+DROP=("${BIG[@]}" out.wasm "${PAGE[@]}")
 
 die() { echo "split.sh: $*" >&2; exit 1; }
 
 [ -d "$SRC" ] || die "built htdocs not found: $SRC (run the build/snapshot first)"
 [ -f "$SRC/out.js" ] || die "$SRC has no out.js — is this a fork-engine build?"
-[ -f "$ROOT/web/fork/index.html" ] || die "missing web/fork/index.html"
-[ -f "$ROOT/web/fork/boot.js" ] || die "missing web/fork/boot.js"
+for f in web/fork/index.html web/fork/boot.js web/serialfs.js web/serialtap.js \
+         web/bootscreen.js web/module-restore.js; do
+  [ -f "$ROOT/$f" ] || die "missing $f"
+done
 for f in "${BIG[@]}"; do
   [ -f "$SRC/$f" ] || die "expected large file missing from build: $f"
 done
@@ -42,17 +50,29 @@ EXCLUDES=()
 for f in "${DROP[@]}"; do EXCLUDES+=(--exclude "$f"); done
 rsync -a "${EXCLUDES[@]}" "$SRC"/ "$PUB"/
 
-# Drop in the tracked, hardened page + bootstrap and the header policy.
-cp "$ROOT/web/fork/index.html" "$PUB/index.html"
-cp "$ROOT/web/fork/boot.js"    "$PUB/boot.js"
-cp "$HERE/_headers"            "$PUB/_headers"
+# Drop in the tracked, hardened page + every page script, and the header
+# policy. module.js is the RESTORE invocation (-incoming): the deployed site
+# always resumes the captured snapshot.
+cp "$ROOT/web/fork/index.html"  "$PUB/index.html"
+cp "$ROOT/web/fork/boot.js"     "$PUB/boot.js"
+cp "$ROOT/web/serialfs.js"      "$PUB/serialfs.js"
+cp "$ROOT/web/serialtap.js"     "$PUB/serialtap.js"
+cp "$ROOT/web/bootscreen.js"    "$PUB/bootscreen.js"
+cp "$ROOT/web/module-restore.js" "$PUB/module.js"
+cp "$HERE/_headers"             "$PUB/_headers"
 
 # --- assertions: fail loudly rather than deploy something broken ------------
-for f in index.html boot.js out.js qemu-system-x86_64.worker.js \
+for f in index.html boot.js serialfs.js serialtap.js bootscreen.js module.js \
+         out.js qemu-system-x86_64.worker.js \
          load-rom.js load-kernel.js load-rootfsB.js load-state.js load-lab.js \
          load-kernel.data load-rom.data load-lab.data _headers; do
   [ -e "$PUB/$f" ] || die "assembled public/ is missing $f"
 done
+# Every <script src> the page names must exist, or the deploy 404s at boot.
+while IFS= read -r ref; do
+  [ -e "$PUB/$ref" ] || die "index.html references missing file: $ref"
+done < <(sed -n 's/.*<script[^>]*src="\.\/\([^"]*\)".*/\1/p' "$PUB/index.html")
+grep -q '\-incoming' "$PUB/module.js" || die "public/module.js is not the restore variant"
 for f in "${BIG[@]}"; do
   [ -e "$PUB/$f" ] && die "large file leaked into public/: $f"
 done

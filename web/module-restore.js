@@ -18,4 +18,10 @@ globalThis.Module = {
         '-incoming', 'file:/pack-state/vm.state',
     ],
     preRun: [(mod) => { try { mod.FS.mkdir('/share'); } catch (e) {} }],
+    // Engine diagnostics, kept off the terminal: a failed restore is
+    // otherwise silent. window.__qemuLog is what to read after a hang.
+    print: (t) => { (window.__qemuLog = window.__qemuLog || []).push('OUT ' + t); },
+    printErr: (t) => { (window.__qemuLog = window.__qemuLog || []).push('ERR ' + t); },
+    onExit: (c) => { (window.__qemuLog = window.__qemuLog || []).push('EXIT code=' + c); },
+    onAbort: (w) => { (window.__qemuLog = window.__qemuLog || []).push('ABORT ' + w); },
 };

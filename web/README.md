@@ -18,6 +18,11 @@ JS bundle (`out.js`) plus a `.wasm` and a pthread worker.
 - `bootscreen.js` — the startup overlay: an ASCII bastion banner shown over the terminal
   until a shell prompt appears, at which point it clears the guest screen and reveals a clean
   prompt. Hides all SeaBIOS/kernel/systemd output.
+- `serialtap.js` — the page's plain-text mirror of the guest console
+  (`window.__serial`), which the boot screen, save/load and tests all read. One
+  streaming UTF-8 decoder for the session: xterm-pty emits fixed 4096-byte
+  chunks, so decoding each chunk separately replaced every multi-byte sequence
+  that straddled a boundary with U+FFFD.
 - `serialfs.js` — Save/Load of the user's home directory. The engine's real filesystem
   lives in the wasm worker where page JavaScript cannot see it, so transfers ride the serial
   console: the guest tars its home to base64 between `BWT-BEGIN`/`BWT-END` sentinels; the page

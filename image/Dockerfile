@@ -175,6 +175,24 @@ RUN set -e; \
       echo "$groups" | tr ' ' '\n' | grep -qx "$g" || \
         { echo "FATAL: user is not in $g"; exit 1; }; \
     done
+# Locale. Nothing set one before, so LANG was unset and the shell ran in the
+# C locale: readline then treats every byte of a multi-byte character as its
+# own cell, the tty line discipline is left without IUTF8, and anything
+# non-ASCII garbles on the way through. C.UTF-8 is built into glibc, so this
+# costs no locale-data package.
+RUN set -e; \
+    chroot /rootfs locale -a | tr 'A-Z' 'a-z' | grep -qE '^c\.utf-?8$' || \
+      { echo "FATAL: C.UTF-8 not available"; chroot /rootfs locale -a; exit 1; }; \
+    printf 'LANG=C.UTF-8\n' > /rootfs/etc/default/locale; \
+    grep -q '^LANG=' /rootfs/etc/environment 2>/dev/null || \
+      printf 'LANG=C.UTF-8\n' >> /rootfs/etc/environment; \
+    printf '%s\n' \
+      '# bashtion: a UTF-8 locale, and a tty told about it.' \
+      'export LANG="${LANG:-C.UTF-8}"' \
+      'if [ -t 0 ]; then stty iutf8 2>/dev/null || true; fi' \
+      > /rootfs/etc/profile.d/00-bashtion-locale.sh; \
+    chmod 644 /rootfs/etc/profile.d/00-bashtion-locale.sh
+
 # fstab: root passno 0 (no initramfs fsck path); 9p share is optional at boot
 RUN printf '%s\n' \
       '/dev/vda / ext4 defaults,errors=remount-ro 0 0' \

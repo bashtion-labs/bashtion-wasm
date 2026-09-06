@@ -8,6 +8,7 @@
 //   Terminal   <- vendor/xterm.js
 //   openpty    <- vendor/xterm-pty.js
 //   SERIALFS   <- serialfs.js
+//   SERIALTAP  <- serialtap.js
 //   Module     <- module.js   (globalThis.Module, the QEMU invocation)
 import initQemu from './out.js';
 
@@ -19,9 +20,11 @@ const { master, slave } = openpty();
 xterm.loadAddon(master);
 Module.pty = slave;
 
-// Test/automation hooks (harmless in normal use).
-window.__serial = '';
-master.onWrite(([buf]) => { window.__serial += new TextDecoder().decode(buf); });
+// Test/automation hooks (harmless in normal use). The serial mirror is
+// installed by serialtap.js, which keeps one streaming UTF-8 decoder for the
+// session - xterm-pty splits its output into fixed 4096-byte chunks, so a
+// per-chunk decoder replaces every straddling multi-byte sequence with U+FFFD.
+SERIALTAP.install(master);
 window.__paste = (s) => xterm.paste(s);
 window.__xterm = xterm;
 

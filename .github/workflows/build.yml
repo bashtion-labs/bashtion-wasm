@@ -13,6 +13,17 @@ permissions:
   contents: read
 
 jobs:
+  # Page-side unit tests: the browser half is plain classic scripts with no
+  # bundler, so node --test loads the real files and drives them directly.
+  web-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test web/test/*.test.mjs
+
   qemu-engine:
     runs-on: ubuntu-latest
     steps:

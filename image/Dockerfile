@@ -258,12 +258,50 @@ RUN set -e; mkdir -p /rootfs/srv/apt; \
       chroot /rootfs sh -c "cd /srv/apt && apt-get update -qq && \
         apt-get install --print-uris -qq --no-install-recommends $pkgs 2>/dev/null | \
         cut -d\\' -f2 | grep '^http' | xargs -r -n1 curl -fsSLO"; \
-    fi; \
-    chroot /rootfs sh -c "cd /srv/apt && dpkg-scanpackages . /dev/null | gzip > Packages.gz"; \
+    fi
+# Index the repo from the BUILDER, not the chroot: dpkg-scanpackages ships in
+# dpkg-dev, which the guest deliberately does not carry. Run inside the chroot
+# it is simply "not found", and because the old form piped it straight into
+# gzip the pipeline still exited 0 - so the image shipped a 20-byte empty
+# gzip and apt could not see a single one of the .debs sitting next to it.
+# Scan to a file, ASSERT the index covers every .deb, and only then compress.
+RUN set -e; \
+    ( cd /rootfs/srv/apt && dpkg-scanpackages . /dev/null > /tmp/Packages ); \
+    debs=$(find /rootfs/srv/apt -name '*.deb' | wc -l | tr -d ' '); \
+    indexed=$(grep -c '^Package: ' /tmp/Packages || true); \
+    echo "srv/apt: ${debs} .debs, ${indexed} indexed"; \
+    [ "$debs" -gt 0 ] || { echo "FATAL: /srv/apt has no .deb files"; exit 1; }; \
+    [ "$indexed" = "$debs" ] || { echo "FATAL: index covers ${indexed}/${debs} packages"; exit 1; }; \
+    install -m644 /tmp/Packages /rootfs/srv/apt/Packages; \
+    gzip -9c /tmp/Packages > /rootfs/srv/apt/Packages.gz; \
+    [ -s /rootfs/srv/apt/Packages.gz ] && \
+      [ "$(gzip -dc /rootfs/srv/apt/Packages.gz | wc -c)" -gt 0 ] || \
+      { echo "FATAL: Packages.gz is empty"; exit 1; }; \
     printf 'deb [trusted=yes] file:/srv/apt ./\n' > /rootfs/etc/apt/sources.list.d/local.list; \
     rm -f /rootfs/etc/apt/sources.list.d/ubuntu.sources; \
     rm -rf /rootfs/var/lib/apt/lists/* /rootfs/var/cache/apt/*.bin; \
     chroot /rootfs apt-get update
+# apt must actually offer every package sitting in the repo from the local
+# origin - the symptom being fixed was `apt install tree` falling through to
+# the network with the .deb in the repo apt had just consulted. Packages that
+# are already installed are legitimately absent from /srv/apt (apt has nothing
+# to fetch for them), so they are reported, not required.
+RUN set -e; \
+    for deb in /rootfs/srv/apt/*.deb; do \
+      name=$(dpkg-deb -f "$deb" Package); \
+      chroot /rootfs apt-cache policy "$name" | grep -q 'file:/srv/apt' || { \
+        echo "FATAL: $name is in /srv/apt but apt does not offer it"; \
+        chroot /rootfs apt-cache policy "$name"; exit 1; }; \
+      echo "  local: $name"; \
+    done; \
+    for p in $(grep -vE '^\s*(#|$)' /extra-packages.txt); do \
+      if chroot /rootfs apt-cache policy "$p" | grep -q 'file:/srv/apt'; then continue; fi; \
+      chroot /rootfs dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'install ok installed' || { \
+        echo "FATAL: $p is neither installed nor installable offline"; \
+        chroot /rootfs apt-cache policy "$p"; exit 1; }; \
+      echo "  preinstalled: $p"; \
+    done; \
+    echo "local repo verified"
 
 # --------------------------------------------------------------- trim pass
 RUN rm -f /rootfs/etc/resolv.conf && touch /rootfs/etc/resolv.conf

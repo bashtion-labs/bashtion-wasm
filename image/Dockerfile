@@ -38,8 +38,10 @@ COPY packages.txt /packages.txt
 RUN grep -vE '^\s*(#|$)' /packages.txt | tr '\n' ',' | sed 's/,$//' > /pkglist
 # --mode=root inside docker build requires no userns setup and is the
 # proven-working path; the tar preserves ownership and xattrs for later
-# extraction. Recommends stay off; docs are pruned but per-package copyright
-# files are kept (licence hygiene).
+# extraction. Recommends stay off; /usr/share/doc is pruned but per-package
+# copyright files are kept (licence hygiene). Man pages are NOT pruned: with no
+# network there is no way to put them back, and `man` is the first thing anyone
+# is told to reach for. They cost ~30 MB and are worth it.
 RUN mmdebstrap --arch=amd64 --variant=important --mode=root --format=tar \
       --components=main,universe \
       --include="$(cat /pkglist)" \
@@ -47,7 +49,6 @@ RUN mmdebstrap --arch=amd64 --variant=important --mode=root --format=tar \
       --aptopt='Acquire::Retries "5"' \
       --dpkgopt='path-exclude=/usr/share/doc/*' \
       --dpkgopt='path-include=/usr/share/doc/*/copyright' \
-      --dpkgopt='path-exclude=/usr/share/man/??*' \
       ${SUITE} /rootfs.tar ${MIRROR}
 
 RUN mkdir /rootfs && tar -C /rootfs --xattrs --xattrs-include='*' \
@@ -63,11 +64,12 @@ RUN getcap /rootfs/usr/bin/ping | grep -q cap_net_raw || \
 # the running kernel truthfully, which package-tooling exercises rely on.
 # the chroot needs DNS only during build; the file is removed again below
 RUN rm -f /rootfs/etc/resolv.conf && cp /etc/resolv.conf /rootfs/etc/resolv.conf
-# persist the doc/man excludes for every later in-chroot install too
+# persist the doc exclude for every later in-chroot and in-guest install too.
+# Man pages are deliberately absent from this list: a package installed from
+# the offline repo must arrive with its manual, since nothing can fetch it later.
 RUN mkdir -p /rootfs/etc/dpkg/dpkg.cfg.d && printf '%s\n' \
       'path-exclude=/usr/share/doc/*' \
       'path-include=/usr/share/doc/*/copyright' \
-      'path-exclude=/usr/share/man/??*' \
       > /rootfs/etc/dpkg/dpkg.cfg.d/90-bashtion-trim
 RUN chroot /rootfs apt-get update && \
     chroot /rootfs apt-get install -y --no-install-recommends linux-image-virtual
@@ -335,13 +337,31 @@ RUN set -e; \
     done; \
     echo "local repo verified"
 
+# ------------------------------------------------------------- manual pages
+# The image used to ship path-exclude=/usr/share/man/??*, so no command on the
+# system had a manual page and, with no network, none could be put back:
+# `man ls` said "No manual entry for ls", which reads as a missing page rather
+# than a stripped feature. Pages now ship; build the apropos/whatis index here
+# so `man -k` works offline too (man-db.timer is masked, so nothing would
+# otherwise ever build it).
+RUN set -e; \
+    chroot /rootfs mandb --create --quiet || chroot /rootfs mandb --create; \
+    pages=$(find /rootfs/usr/share/man -name '*.gz' | wc -l | tr -d ' '); \
+    echo "man pages: ${pages}, $(du -sh /rootfs/usr/share/man | cut -f1)"; \
+    [ "$pages" -gt 500 ] || { echo "FATAL: only ${pages} man pages present"; exit 1; }; \
+    for m in man1/ls.1.gz man1/bash.1.gz man8/mount.8.gz man5/fstab.5.gz; do \
+      [ -e "/rootfs/usr/share/man/$m" ] || { echo "FATAL: missing man page $m"; exit 1; }; \
+    done; \
+    chroot /rootfs man -w ls >/dev/null || { echo "FATAL: man cannot resolve ls"; exit 1; }; \
+    chroot /rootfs man -k ls >/dev/null 2>&1 || { echo "FATAL: apropos index empty"; exit 1; }
+
 # --------------------------------------------------------------- trim pass
 RUN rm -f /rootfs/etc/resolv.conf && touch /rootfs/etc/resolv.conf
 RUN set -e; \
     rm -rf /rootfs/usr/share/vim/vim*/doc /rootfs/usr/share/vim/vim*/tutor \
            /rootfs/usr/share/vim/vim*/spell /rootfs/usr/share/vim/vim*/lang \
            /rootfs/usr/share/zoneinfo/right /rootfs/usr/share/zoneinfo/posix \
-           /rootfs/var/cache/apt/archives /rootfs/var/cache/man \
+           /rootfs/var/cache/apt/archives \
            /rootfs/usr/share/icons /rootfs/usr/share/fonts; \
     # keep only English message catalogs
     find /rootfs/usr/share/locale -mindepth 1 -maxdepth 1 \

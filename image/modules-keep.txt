@@ -65,8 +65,10 @@ ipt_REJECT
 # ufw's before6.rules matches on the IPv6 routing header and hop limit
 # (-m rt --rt-type 0, -m hl --hl-eq 255). Without these ufw-init fails on the
 # v6 half - which fails the whole of `ufw enable` - even when v4 is perfect.
+# The hop-limit match is xt_hl, not ip6t_hl: it was merged with the IPv4 ttl
+# match years ago and one module now serves both families.
 ip6t_rt
-ip6t_hl
+xt_hl
 ?ip6t_ah
 ?ip6t_frag
 ?ip6t_ipv6header

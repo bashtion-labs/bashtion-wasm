@@ -246,6 +246,43 @@ def run_checks(con):
           '200' in out, out)
     capture(con, 'sudo ufw --force disable 2>&1 | tail -1', 180)
 
+    # ---- #50/#51 the session survives a save/restore round trip -----------
+    capture(con, 'echo canary-home > ~/marker.txt; echo canary-share > ~/share/marker.txt')
+    capture(con, 'sudo mkdir -p /opt/example/dir && sudo groupadd exgroup && '
+                 'sudo useradd -m exuser && sudo setfacl -m u:exuser:rwx /opt/example/dir', 300)
+    capture(con, 'sudo sh -c "echo edited-by-user >> /etc/bashtion-probe"')
+    rc, out = capture(con, 'sudo /usr/local/sbin/bashtion-pack > /tmp/probe.tgz 2>/tmp/probe.err; '
+                           'echo packed $(wc -c < /tmp/probe.tgz)', 600)
+    check('#50 bashtion-pack produces an archive', rc == 0 and ' 0' not in out, out)
+    rc, err = capture(con, 'cat /tmp/probe.err')
+    print('     pack said: %s' % err.replace('\n', ' | ')[:300], flush=True)
+
+    capture(con, 'rm -f ~/marker.txt ~/share/marker.txt; '
+                 'sudo rm -rf /opt/example /etc/bashtion-probe; '
+                 'sudo userdel -r exuser >/dev/null 2>&1; sudo groupdel exgroup', 300)
+    rc, out = capture(con, 'sudo /usr/local/sbin/bashtion-unpack < /tmp/probe.tgz 2>&1', 600)
+    check('#50 bashtion-unpack applies it', rc == 0, out)
+
+    rc, out = capture(con, 'cat ~/marker.txt')
+    check('#50 a home file comes back', 'canary-home' in out, out)
+    rc, out = capture(con, 'cat ~/share/marker.txt')
+    check('#51 ~/share comes back too (it used to be the one excluded path)',
+          'canary-share' in out, out)
+    rc, out = capture(con, 'id exuser')
+    check('#50 a user created in the session comes back', rc == 0, out)
+    rc, out = capture(con, 'getfacl -p /opt/example/dir 2>/dev/null | grep user:exuser')
+    check('#50 an ACL comes back', 'exuser:rwx' in out, out)
+    rc, out = capture(con, 'cat /etc/bashtion-probe')
+    check('#50 an edited /etc file comes back', 'edited-by-user' in out, out)
+    capture(con, 'sudo rm -rf /opt/example /etc/bashtion-probe /tmp/probe.tgz /tmp/probe.err; '
+                 'rm -f ~/marker.txt ~/share/marker.txt; '
+                 'sudo userdel -r exuser >/dev/null 2>&1; sudo groupdel exgroup', 300)
+
+    # ---- #60 the guest can be told the terminal's shape -------------------
+    rc, out = capture(con, 'stty rows 43 cols 160; stty size')
+    check('#60 the console accepts a window size', out.strip().endswith('43 160'), out)
+    capture(con, 'stty rows 24 cols 80')
+
 
 if __name__ == '__main__':
     main()

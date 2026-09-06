@@ -144,7 +144,8 @@ RUN KVER=$(cat /kver); chroot /rootfs depmod "$KVER" && du -sh /rootfs/lib/modul
 RUN KVER=$(cat /kver); ok=1; \
     for m in dm_mod dm_snapshot dm_mirror dm_thin_pool quota_v2 quota_tree \
              9p 9pnet_virtio ip_tables iptable_filter nf_conntrack \
-             xt_conntrack xt_limit ipt_REJECT overlay virtio_blk virtio_pci; do \
+             nf_tables nft_compat xt_conntrack xt_limit xt_tcpudp xt_addrtype \
+             ipt_REJECT overlay virtio_blk virtio_pci; do \
       if modinfo -b /rootfs -k "$KVER" "$m" >/dev/null 2>&1; then continue; fi; \
       if grep -qE "(/|^)$(echo $m | tr _ -)\.ko" /rootfs/lib/modules/$KVER/modules.builtin 2>/dev/null || \
          grep -qE "(/|^)${m}\.ko" /rootfs/lib/modules/$KVER/modules.builtin 2>/dev/null; then continue; fi; \

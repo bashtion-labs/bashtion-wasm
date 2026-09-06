@@ -23,11 +23,13 @@
     <div id="controls" style="position:fixed;top:4px;right:8px;font:12px system-ui;color:#9a9a9a">
       <span id="sfsStatus" style="margin-right:8px"></span>
       <button id="exportBtn">Download my work</button>
-      <label><input type="file" id="importInp" hidden>
-        <button id="loadBtn">Load work</button></label>
+      <button id="loadBtn">Load work</button>
+      <button id="loadFileBtn">Load from a file…</button>
+      <input type="file" id="importInp" hidden>
     </div>
     <div id="terminal"></div>
     <script src="./serialtap.js"></script>
+    <script src="./termfit.js"></script>
     <script src="./serialfs.js"></script>
     <script src="./bootscreen.js"></script>
     <script src="./module.js"></script>

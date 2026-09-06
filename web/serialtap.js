@@ -12,6 +12,13 @@
 'use strict';
 
 const SERIALTAP = (() => {
+  // Ubuntu 26.04 turns on shell integration, so OSC 3008 brackets every
+  // command's output. Anything reading this mirror has to strip OSC as well
+  // as CSI, or it matches escape sequences instead of text.
+  const strip = (x) => String(x || '')
+    .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+
   function install(master, win) {
     const w = win || window;
     const dec = new TextDecoder('utf-8');
@@ -19,5 +26,13 @@ const SERIALTAP = (() => {
     master.onWrite(([buf]) => { w.__serial += dec.decode(buf, { stream: true }); });
     return w;
   }
-  return { install };
+
+  // Is the console sitting at an idle shell prompt? Used before injecting
+  // anything the user did not type, so it cannot land mid-command.
+  function atPrompt(win) {
+    const w = win || window;
+    return /(user@bashtion:[^\n]*[$#]|[$#]) ?$/m.test(strip(w.__serial).slice(-200));
+  }
+
+  return { install, strip, atPrompt };
 })();

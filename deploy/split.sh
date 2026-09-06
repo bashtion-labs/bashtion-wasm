@@ -26,7 +26,7 @@ PUB="$HERE/public"
 BIG=(qemu-system-x86_64.wasm load-rootfsB.data load-state.data)
 # out.wasm is an unused duplicate of qemu-system-x86_64.wasm — never ship it.
 # The page scripts are dropped from the build copy and taken from web/ below.
-PAGE=(index.html boot.js serialfs.js serialtap.js bootscreen.js module.js)
+PAGE=(index.html boot.js serialfs.js serialtap.js termfit.js bootscreen.js module.js)
 DROP=("${BIG[@]}" out.wasm "${PAGE[@]}")
 
 die() { echo "split.sh: $*" >&2; exit 1; }
@@ -34,7 +34,7 @@ die() { echo "split.sh: $*" >&2; exit 1; }
 [ -d "$SRC" ] || die "built htdocs not found: $SRC (run the build/snapshot first)"
 [ -f "$SRC/out.js" ] || die "$SRC has no out.js — is this a fork-engine build?"
 for f in web/fork/index.html web/fork/boot.js web/serialfs.js web/serialtap.js \
-         web/bootscreen.js web/module-restore.js; do
+         web/termfit.js web/bootscreen.js web/module-restore.js; do
   [ -f "$ROOT/$f" ] || die "missing $f"
 done
 for f in "${BIG[@]}"; do
@@ -57,12 +57,13 @@ cp "$ROOT/web/fork/index.html"  "$PUB/index.html"
 cp "$ROOT/web/fork/boot.js"     "$PUB/boot.js"
 cp "$ROOT/web/serialfs.js"      "$PUB/serialfs.js"
 cp "$ROOT/web/serialtap.js"     "$PUB/serialtap.js"
+cp "$ROOT/web/termfit.js"       "$PUB/termfit.js"
 cp "$ROOT/web/bootscreen.js"    "$PUB/bootscreen.js"
 cp "$ROOT/web/module-restore.js" "$PUB/module.js"
 cp "$HERE/_headers"             "$PUB/_headers"
 
 # --- assertions: fail loudly rather than deploy something broken ------------
-for f in index.html boot.js serialfs.js serialtap.js bootscreen.js module.js \
+for f in index.html boot.js serialfs.js serialtap.js termfit.js bootscreen.js module.js \
          out.js qemu-system-x86_64.worker.js \
          load-rom.js load-kernel.js load-rootfsB.js load-state.js load-lab.js \
          load-kernel.data load-rom.data load-lab.data _headers; do

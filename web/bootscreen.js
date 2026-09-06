@@ -48,6 +48,13 @@ const BOOTSCREEN = (() => {
     const epoch = Math.floor(Date.now() / 1000);
     cmds.push('sudo date -u -s @' + epoch + ' >/dev/null 2>&1');
     cmds.push('sudo hwclock --systohc >/dev/null 2>&1');
+    // The terminal is whatever shape the browser window is; the guest's tty
+    // is still the kernel's 24x80 default until something tells it otherwise,
+    // and a serial console has no way to signal a resize.
+    const t = window.__xterm;
+    if (t && t.cols && t.rows && typeof TERMFIT === 'object') {
+      cmds.push(TERMFIT.stty({ cols: t.cols, rows: t.rows }));
+    }
     // The guest's /etc/motd covers the deliberate absence of a network, the
     // spare /dev/vdb, and the fact that work is not saved unless you save it.
     // pam_motd already printed it at login, behind this very screen.

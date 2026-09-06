@@ -164,6 +164,18 @@ def cmd_pack():
           '%d deleted, %.1f MiB before compression'
           % (len(home), len(system), len(deleted), bytes_total / 1048576.0),
           file=sys.stderr)
+    if bytes_total > 1048576:
+        sized = []
+        for p in members:
+            try:
+                if os.path.isfile(p) and not os.path.islink(p):
+                    sized.append((os.path.getsize(p), p))
+            except OSError:
+                pass
+        sized.sort(reverse=True)
+        print('bashtion-pack: largest: %s'
+              % ', '.join('%s (%d KiB)' % (p, n // 1024) for n, p in sized[:8]),
+              file=sys.stderr)
 
     listing = '\0'.join(p.lstrip('/') for p in members) + '\0'
     tar = subprocess.Popen(

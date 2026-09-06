@@ -80,15 +80,24 @@ _seq = iter(range(1, 1 << 30))
 
 
 def capture(con, cmd, timeout=180):
-    """Run one command; return (exit status, its output)."""
+    """Run one command; return (exit status, its output).
+
+    The guest echoes the command line back before running it, and the previous
+    command's prompt is still unread when this one is sent, so the captured
+    region starts somewhere in the middle of both. Cut at the tail of the
+    echoed line - `echo <tag>=$?` appears there literally and nowhere else.
+    """
     tag = 'BCHK%d' % next(_seq)
     start = con.mark()
-    con.send('%s; echo %s=$?\n' % (cmd, tag))
+    trailer = 'echo %s=$?' % tag
+    con.send('%s; %s\n' % (cmd, trailer))
     m = con.expect(r'%s=(\d+)' % tag, timeout, start)
     if not m:
         return None, con.text(start)
     body = con.text(start)[:m.start()]
-    # drop the echoed command line itself
+    i = body.find(trailer)
+    if i >= 0:
+        body = body[i + len(trailer):]
     body = body.split('\n', 1)[1] if '\n' in body else ''
     return int(m.group(1)), body.strip()
 
@@ -176,8 +185,9 @@ def run_checks(con):
     # ---- #54 manual pages ------------------------------------------------
     rc, out = capture(con, 'man -w ls')
     check('#54 man resolves a page for ls', rc == 0 and '/man/' in out, out)
-    rc, out = capture(con, 'man ls 2>/dev/null | head -2 | tail -1')
-    check('#54 man renders it', rc == 0 and 'ls' in out.lower(), out)
+    rc, out = capture(con, 'man ls 2>/dev/null | wc -l')
+    check('#54 man renders a full page',
+          out.strip().isdigit() and int(out.strip()) > 20, out)
     rc, out = capture(con, 'man -k passwd 2>&1 | head -2', 120)
     check('#54 apropos index is built', rc == 0 and 'passwd' in out, out)
 

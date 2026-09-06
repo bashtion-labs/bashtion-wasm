@@ -164,7 +164,7 @@ def cmd_pack():
           '%d deleted, %.1f MiB before compression'
           % (len(home), len(system), len(deleted), bytes_total / 1048576.0),
           file=sys.stderr)
-    if bytes_total > 1048576:
+    if bytes_total > 65536:
         sized = []
         for p in members:
             try:

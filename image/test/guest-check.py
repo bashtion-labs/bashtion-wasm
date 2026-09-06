@@ -269,7 +269,7 @@ def run_checks(con):
                            'echo packed $(wc -c < /tmp/probe.tgz)', 600)
     check('#50 bashtion-pack produces an archive', rc == 0 and ' 0' not in out, out)
     rc, err = capture(con, 'cat /tmp/probe.err')
-    print('     pack said: %s' % err.replace('\n', ' | ')[:300], flush=True)
+    print('     pack said: %s' % err.replace('\n', ' | ')[:900], flush=True)
 
     capture(con, 'rm -f ~/marker.txt ~/share/marker.txt; '
                  'sudo rm -rf /opt/example /etc/bashtion-probe; '

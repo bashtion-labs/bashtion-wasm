@@ -216,9 +216,14 @@ const SERIALFS = (() => {
                 'Checksum did not match (' + bin.length + ' of ' + m[1] + ' bytes). Try again.');
         return null;
       }
-      await tidy();
       return bin;
-    } finally { busy = false; }
+    } finally {
+      // Whatever happened, hand the terminal back the way it was found: a
+      // transfer that dies between `stty -echo` and `stty echo` otherwise
+      // leaves the user typing into a console that shows nothing.
+      paste('stty echo; rm -f /tmp/bw-save.tgz /tmp/bw-save.err 2>/dev/null\n');
+      try { await tidy(); } finally { busy = false; }
+    }
   }
 
   // ---- restore -----------------------------------------------------------
@@ -274,7 +279,6 @@ const SERIALFS = (() => {
       if (!sum) return { ok: false, why: 'The guest never confirmed the transfer.' };
       if (Number(sum[1]) !== bytes.length || Number(sum[2]) !== cksum(bytes)) {
         // Nothing has been unpacked yet, so the session is untouched.
-        paste('rm -f /tmp/bw-load.b64 /tmp/bw-load.tgz; stty echo\n');
         return { ok: false, why: 'The archive arrived damaged (' + sum[1] + ' of ' +
                                  bytes.length + ' bytes). Nothing was changed — try again.' };
       }
@@ -292,8 +296,8 @@ const SERIALFS = (() => {
       }
       return { ok: true };
     } finally {
-      busy = false;
-      await tidy();
+      paste('stty echo; rm -f /tmp/bw-load.b64 /tmp/bw-load.tgz /tmp/bw-load.err 2>/dev/null\n');
+      try { await tidy(); } finally { busy = false; }
     }
   }
 

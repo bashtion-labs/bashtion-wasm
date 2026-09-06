@@ -49,7 +49,13 @@ status('running');
 // sitting at an idle prompt, so the command can never land inside something
 // the user (or a save/restore transfer) is in the middle of.
 window.__fit = () => TERMFIT.fit(xterm, termEl, window);
-window.__fit();
+// The renderer may not have measured a cell yet on the first attempt; keep
+// trying briefly rather than leave the grid at xterm's 80x24 default, which
+// is the state this fixes.
+(function settle(n) {
+  if (TERMFIT.measure(xterm, termEl, window)) { window.__fit(); return; }
+  if (n > 0) setTimeout(() => settle(n - 1), 250);
+})(12);
 let resizeTimer;
 window.addEventListener('resize', () => {
   clearTimeout(resizeTimer);

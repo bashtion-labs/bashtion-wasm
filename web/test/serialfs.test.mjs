@@ -137,6 +137,25 @@ test('#47 markers are never matched against their own command echo', async () =>
   }
 });
 
+test('the terminal is handed back with echo on, however a transfer ends', async () => {
+  for (const opts of [{}, { unpackFails: 'tar: broken' }]) {
+    const p = sfs(opts);
+    p.storage.files.set('bashtion-work.tgz', archive(2500, 23));
+    await p.SERIALFS.load();
+    const restored = p.guest.commands.filter((c) => /(^|; )stty echo/.test(c));
+    assert.ok(restored.length > 0,
+              'no `stty echo` after a transfer that ' +
+              (opts.unpackFails ? 'failed' : 'succeeded'));
+  }
+});
+
+test('a failed save also restores echo', async () => {
+  const p = sfs({ packFails: 'boom' });
+  await p.SERIALFS.save();
+  assert.ok(p.guest.commands.some((c) => /(^|; )stty echo/.test(c)),
+            'no `stty echo` after a failed save');
+});
+
 // -------------------------------------------------------------------- #49
 test('#49 Load with no file restores the copy this browser remembers', async () => {
   const bin = archive(2500, 17);

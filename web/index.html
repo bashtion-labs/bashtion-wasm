@@ -116,7 +116,10 @@
         })();
       }
       window.__fit = () => TERMFIT.fit(xterm, termEl, window);
-      window.__fit();
+      (function settle(n) {
+        if (TERMFIT.measure(xterm, termEl, window)) { window.__fit(); return; }
+        if (n > 0) setTimeout(() => settle(n - 1), 250);
+      })(12);
       let resizeTimer;
       window.addEventListener('resize', () => {
         clearTimeout(resizeTimer);

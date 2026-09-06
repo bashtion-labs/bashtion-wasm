@@ -36,16 +36,29 @@ const BOOTSCREEN = (() => {
     setInterval(() => { if (dots) dots.textContent = '.'.repeat((n = (n + 1) % 4)); }, 450);
   }
 
+  // Hand over to a cleared console that states what is otherwise
+  // undiscoverable. The guest's /etc/motd is written at image build time and
+  // covers the deliberate absence of a network, the spare /dev/vdb, and the
+  // fact that work is not saved unless you save it. pam_motd already printed
+  // it at login, behind this very screen, so print it again after the clear.
+  const HANDOVER = 'clear; cat /etc/motd 2>/dev/null\n';
+
   function reveal() {
     if (revealed) return;
     revealed = true;
     window.__booted = true;
-    try { window.__paste && window.__paste('clear\n'); } catch (e) {}
-    setTimeout(() => {
+    try { window.__paste && window.__paste(HANDOVER); } catch (e) {}
+    // Wait for the prompt to come back before lifting the cover, so nobody
+    // watches the motd being drawn a line at a time under emulation.
+    const t0 = Date.now();
+    const settle = setInterval(() => {
+      const back = /[$#] ?$/m.test(stripANSI(window.__serial || '').slice(-200));
+      if (!back && Date.now() - t0 < 8000) return;
+      clearInterval(settle);
       if (!el) return;
       el.style.opacity = '0';
       setTimeout(() => { el.style.display = 'none'; }, 550);
-    }, 500);
+    }, 250);
   }
 
   function start() {

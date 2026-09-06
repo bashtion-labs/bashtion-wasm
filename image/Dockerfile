@@ -217,7 +217,7 @@ RUN mkdir -p /rootfs/etc/lvm && \
 # command-line tools the storage exercises use.
 RUN for u in systemd-networkd.service systemd-networkd-wait-online.service \
              systemd-timesyncd.service apt-daily.timer apt-daily-upgrade.timer \
-             networkd-dispatcher.service \
+             networkd-dispatcher.service systemd-resolved.service \
              motd-news.timer man-db.timer e2scrub_all.timer fstrim.timer \
              keyboard-setup.service console-setup.service \
              lvm2-monitor.service blk-availability.service \
@@ -355,8 +355,56 @@ RUN set -e; \
     chroot /rootfs man -w ls >/dev/null || { echo "FATAL: man cannot resolve ls"; exit 1; }; \
     chroot /rootfs man -k ls >/dev/null 2>&1 || { echo "FATAL: apropos index empty"; exit 1; }
 
+# ------------------------------------------------- deliberately offline
+# QEMU is started with -nic none: loopback is the only network, by design.
+# The guest was left mid-configuration rather than coherently offline - an
+# empty /etc/netplan, a zero-byte /etc/resolv.conf, and a live systemd-resolved
+# stub listening with no nameserver behind it. That reads as a broken machine
+# rather than a deliberate one, and every lookup blocked for minutes first.
+#
+# systemd-resolved is masked above. Give resolv.conf real content: with no
+# nameserver line glibc falls back to 127.0.0.1, where nothing is listening,
+# so resolution fails immediately and says so instead of timing out.
+RUN set -e; \
+    rm -f /rootfs/etc/resolv.conf; \
+    printf '%s\n' \
+      '# bashtion has no network interface: QEMU is started with -nic none.' \
+      '# There is no nameserver to point at, and nothing here is misconfigured.' \
+      '# Name resolution fails immediately and deliberately. See /etc/motd.' \
+      'options timeout:1 attempts:1' \
+      > /rootfs/etc/resolv.conf; \
+    chmod 644 /rootfs/etc/resolv.conf; \
+    mkdir -p /rootfs/etc/netplan; \
+    printf '%s\n' \
+      'This directory is intentionally free of .yaml files.' \
+      '' \
+      'bashtion has no network interface, so there is nothing for netplan to' \
+      'configure. `ip link` shows loopback and nothing else, and `ip route`' \
+      'prints nothing because there are no routes - not because it failed.' \
+      > /rootfs/etc/netplan/README-no-network; \
+    chmod 644 /rootfs/etc/netplan/README-no-network
+
+# The one screen everyone sees. The boot screen clears the console and prints
+# this before handing over, so the things that are otherwise undiscoverable -
+# no network by design, a spare disk nobody mentions, work that is not saved
+# unless you save it - are stated once, up front.
+RUN set -e; rm -f /rootfs/etc/motd; printf '%s\n' \
+      '' \
+      '  bashtion - a real Linux system, running in your browser tab.' \
+      '' \
+      '  Network   None, by design. Loopback works (ping 127.0.0.1); nothing' \
+      '            outside this VM is reachable. `apt install` is served from' \
+      '            the offline repository in /srv/apt.' \
+      '  Storage   / has limited room. /dev/vdb is a spare 1 GB disk, empty and' \
+      '            unpartitioned - use it for partitioning, LVM and quota work.' \
+      '  Saving    Nothing is saved automatically. Use "Download my work"' \
+      '            before you close the tab.' \
+      '  Docs      Manual pages are installed: try `man man` or `man -k disk`.' \
+      '' \
+      > /rootfs/etc/motd; \
+    chmod 644 /rootfs/etc/motd; cat /rootfs/etc/motd
+
 # --------------------------------------------------------------- trim pass
-RUN rm -f /rootfs/etc/resolv.conf && touch /rootfs/etc/resolv.conf
 RUN set -e; \
     rm -rf /rootfs/usr/share/vim/vim*/doc /rootfs/usr/share/vim/vim*/tutor \
            /rootfs/usr/share/vim/vim*/spell /rootfs/usr/share/vim/vim*/lang \

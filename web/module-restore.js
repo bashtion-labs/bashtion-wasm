@@ -8,7 +8,7 @@ globalThis.Module = {
         '-L', '/pack-rom/',
         '-nic', 'none',
         '-kernel', '/pack-kernel/vmlinuz',
-        '-append', 'console=ttyS0,115200n8 root=/dev/vda rw rootwait nokaslr nosoftlockup nowatchdog random.trust_cpu=on modules_load=virtio_rng systemd.show_status=1',
+        '-append', 'console=ttyS0,115200n8 root=/dev/vda rw rootwait nokaslr nosoftlockup nowatchdog random.trust_cpu=on tsc=unstable clocksource=acpi_pm modules_load=virtio_rng systemd.show_status=1',
         '-drive', 'id=root,file=/pack-rootfs/rootfs.ext4,format=raw,if=none',
         '-device', 'virtio-blk-pci,drive=root',
         '-drive', 'id=lab,file=/pack-lab/vdb.qcow2,format=qcow2,if=none',

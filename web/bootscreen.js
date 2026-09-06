@@ -37,17 +37,30 @@ const BOOTSCREEN = (() => {
   }
 
   // Hand over to a cleared console that states what is otherwise
-  // undiscoverable. The guest's /etc/motd is written at image build time and
-  // covers the deliberate absence of a network, the spare /dev/vdb, and the
-  // fact that work is not saved unless you save it. pam_motd already printed
-  // it at login, behind this very screen, so print it again after the clear.
-  const HANDOVER = 'clear; cat /etc/motd 2>/dev/null\n';
+  // undiscoverable. Everything here runs while the cover is still up, so none
+  // of it is ever seen; the `clear` at the end is what the user arrives at.
+  function handover() {
+    const cmds = [];
+    // The restored VM's wall clock is whatever it was when the snapshot was
+    // captured - typically many hours ago, and there is no NTP to correct it.
+    // The page is the only thing here that knows the real time, so it says so
+    // once, at the moment of handover, and writes it through to the RTC.
+    const epoch = Math.floor(Date.now() / 1000);
+    cmds.push('sudo date -u -s @' + epoch + ' >/dev/null 2>&1');
+    cmds.push('sudo hwclock --systohc >/dev/null 2>&1');
+    // The guest's /etc/motd covers the deliberate absence of a network, the
+    // spare /dev/vdb, and the fact that work is not saved unless you save it.
+    // pam_motd already printed it at login, behind this very screen.
+    cmds.push('clear');
+    cmds.push('cat /etc/motd 2>/dev/null');
+    return cmds.join('; ') + '\n';
+  }
 
   function reveal() {
     if (revealed) return;
     revealed = true;
     window.__booted = true;
-    try { window.__paste && window.__paste(HANDOVER); } catch (e) {}
+    try { window.__paste && window.__paste(handover()); } catch (e) {}
     // Wait for the prompt to come back before lifting the cover, so nobody
     // watches the motd being drawn a line at a time under emulation.
     const t0 = Date.now();

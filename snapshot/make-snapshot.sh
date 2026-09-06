@@ -28,7 +28,7 @@ mkdir -p "$OUT/share"
   -m 512M -accel tcg,tb-size=128 \
   -nic none \
   -kernel "$IMG/vmlinuz" \
-  -append "console=ttyS0,115200n8 root=/dev/vda rw rootwait nokaslr nosoftlockup nowatchdog random.trust_cpu=on modules_load=virtio_rng systemd.show_status=1" \
+  -append "console=ttyS0,115200n8 root=/dev/vda rw rootwait nokaslr nosoftlockup nowatchdog random.trust_cpu=on tsc=unstable clocksource=acpi_pm modules_load=virtio_rng systemd.show_status=1" \
   -drive id=root,file="$OUT/rootfs-booted.ext4",format=raw,if=none \
   -device virtio-blk-pci,drive=root \
   -drive id=lab,file="$OUT/vdb.qcow2",format=qcow2,if=none \

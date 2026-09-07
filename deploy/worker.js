@@ -22,10 +22,17 @@
 
 // path -> { R2 object key, content-type }. Only these three paths are served
 // from R2; every other path falls through to static assets.
+// Versioned keys, and they must stay versioned. Overwriting one of these in
+// place does not reliably reach anybody: the edge cache below is consulted
+// before R2 and holds objects under CACHE_MAX_BYTES for a year, and browsers
+// hold theirs the same way. Worse, the loader JS bakes in the exact byte length
+// of its .data, so a stale object is not an error - it is a silently truncated
+// disk or memory image. Bump the suffix whenever the bytes change (pack-site.sh
+// --r2-tag), deploy, and delete the old objects once traffic has moved.
 const R2_FILES = {
-  '/qemu-system-x86_64.wasm': { key: 'qemu-system-x86_64.wasm', type: 'application/wasm' },
-  '/load-rootfsB.data':       { key: 'load-rootfsB.data',       type: 'application/octet-stream' },
-  '/load-state.data':         { key: 'load-state.data',         type: 'application/octet-stream' },
+  '/qemu-system-x86_64.wasm':    { key: 'qemu-system-x86_64.wasm',    type: 'application/wasm' },
+  '/load-rootfsB.v2.data':       { key: 'load-rootfsB.v2.data',       type: 'application/octet-stream' },
+  '/load-state.v2.data':         { key: 'load-state.v2.data',         type: 'application/octet-stream' },
 };
 
 const SECURITY_HEADERS = {

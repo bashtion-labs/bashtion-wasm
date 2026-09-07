@@ -19,11 +19,21 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-SRC="${1:-$ROOT/out/gate1/htdocsF}"
+SRC="${1:-$ROOT/out/site}"
 PUB="$HERE/public"
 
-# The three files that exceed the 25 MiB static-asset cap and go to R2 instead.
-BIG=(qemu-system-x86_64.wasm load-rootfsB.data load-state.data)
+# Static Assets reject any file over 25 MiB, so those go to R2 instead. Derive
+# the list from the build rather than hardcoding names: the R2 bundles carry a
+# version suffix (load-rootfsB.v2.data) that changes whenever their bytes do,
+# and a hardcoded list silently stops matching the moment it is bumped.
+CAP=$((25 * 1024 * 1024))
+BIG=()
+if [ -d "$SRC" ]; then
+  while IFS= read -r f; do
+    sz=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f")
+    [ "$sz" -gt "$CAP" ] && BIG+=("$(basename "$f")")
+  done < <(find "$SRC" -maxdepth 1 -type f | sort)
+fi
 # out.wasm is an unused duplicate of qemu-system-x86_64.wasm — never ship it.
 # The page scripts are dropped from the build copy and taken from web/ below.
 PAGE=(index.html boot.js serialfs.js serialtap.js termfit.js bootscreen.js module.js)
@@ -31,15 +41,14 @@ DROP=("${BIG[@]}" out.wasm "${PAGE[@]}")
 
 die() { echo "split.sh: $*" >&2; exit 1; }
 
-[ -d "$SRC" ] || die "built htdocs not found: $SRC (run the build/snapshot first)"
+[ -d "$SRC" ] || die "built htdocs not found: $SRC (run: make site ENGINE=... GUEST=...)"
+[ ${#BIG[@]} -gt 0 ] || die "no file in $SRC is over the 25 MiB cap — is this a real build?"
 [ -f "$SRC/out.js" ] || die "$SRC has no out.js — is this a fork-engine build?"
 for f in web/fork/index.html web/fork/boot.js web/serialfs.js web/serialtap.js \
          web/termfit.js web/bootscreen.js web/module-restore.js; do
   [ -f "$ROOT/$f" ] || die "missing $f"
 done
-for f in "${BIG[@]}"; do
-  [ -f "$SRC/$f" ] || die "expected large file missing from build: $f"
-done
+echo "==> R2-bound (over the ${CAP} byte static cap): ${BIG[*]}"
 
 echo "==> assembling $PUB from $SRC"
 rm -rf "$PUB"

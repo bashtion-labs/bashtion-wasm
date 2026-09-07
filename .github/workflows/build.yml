@@ -84,6 +84,33 @@ jobs:
           docker exec forkbuild emmake make -j"$(nproc)" qemu-system-x86_64
           mkdir -p out/fork
           docker exec forkbuild sh -c 'cd /build && tar cf - qemu-system-x86_64*' | tar xf - -C out/fork
+
+          # The page needs more than the engine binary, and all of it has to
+          # come from THIS build: the browser's xterm/xterm-pty must be the same
+          # version the engine linked against, and the ROMs must match the
+          # machine it emulates. Without these in the artifact there is no way
+          # to assemble a site from CI output alone, which is why the packaging
+          # step only ever existed as hand-run commands.
+          mkdir -p out/fork/vendor out/fork/pc-bios
+          for spec in "xterm.js:*/xterm/lib/xterm.js" \
+                      "xterm.css:*/xterm/css/xterm.css" \
+                      "xterm-pty.js:*/xterm-pty/index.js"; do
+            name="${spec%%:*}"; pat="${spec#*:}"
+            src=$(docker exec forkbuild sh -c "find /build/node_modules -path '$pat' -print -quit")
+            if [ -z "$src" ]; then
+              echo "FATAL: nothing matching $pat under /build/node_modules"
+              docker exec forkbuild sh -c 'ls /build/node_modules' || true
+              exit 1
+            fi
+            docker cp "forkbuild:$src" "out/fork/vendor/$name"
+            echo "  vendor/$name <- $src"
+          done
+          for r in bios-256k.bin vgabios-stdvga.bin kvmvapic.bin linuxboot_dma.bin; do
+            [ -f "fork/pc-bios/$r" ] || { echo "FATAL: fork/pc-bios/$r missing"; exit 1; }
+            cp "fork/pc-bios/$r" out/fork/pc-bios/
+          done
+          ls -la out/fork out/fork/vendor out/fork/pc-bios
+
           docker rm -f forkbuild
 
       - uses: actions/upload-artifact@v4

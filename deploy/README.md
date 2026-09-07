@@ -4,17 +4,57 @@ This directory deploys the browser VM to Cloudflare's free plan with a
 security-first configuration. Follow it top to bottom the first time; the
 **Updating** and **Reference** sections are for later.
 
+## Getting the files in the first place
+
+Everything is built in CI, on x86_64 runners — nothing here needs a local
+x86_64 machine or an emulator:
+
+| Workflow | Artifact | What is in it |
+|---|---|---|
+| `build.yml` | `qemu-engine` | `out.js`, the `.wasm`, the pthread worker, `vendor/` (xterm + xterm-pty, the versions the engine linked against) and `pc-bios/` |
+| `snapshot.yml` | `snapshot-set` | `vmlinuz`, `rootfs-booted.ext4`, `vdb.qcow2`, `vm.state` |
+
+`snapshot.yml` runs automatically on a push to `main` touching `image/**` or
+`snapshot/**`, and builds native QEMU **from the ktock fork tree** to do the
+capture — a distro-QEMU stream makes the fork engine hang silently at
+`-incoming`, so that detail is not optional.
+
+Then assemble locally:
+
+```sh
+gh run download -n qemu-engine  -D /tmp/engine
+gh run download -n snapshot-set -D /tmp/guest
+make site ENGINE=/tmp/engine GUEST=/tmp/guest
+```
+
+`make site` runs `scripts/pack-site.sh` (emscripten's `file_packager`, in a
+pinned emsdk container — it is pure Python, so it runs fine on Apple Silicon)
+and then `deploy/split.sh`. It prints the static/R2 split and the exact upload
+commands. It asserts, for every bundle, that the basename the browser fetches
+and the guest path QEMU opens are both right, and that every path
+`web/module-restore.js` names is actually packaged — a mismatch there is a VM
+that cannot find its own disks.
+
+**The rootfs must be `rootfs-booted.ext4` from the snapshot set**, never
+`out/image/rootfs.ext4`. A migration stream restores RAM and device state that
+reference the disk as it was at capture; they are a matched set and mixing them
+produces a VM that will not resume. `pack-site.sh` takes the right one.
+
 ## What gets deployed, and why it is shaped this way
 
-The build produces one directory of files (`out/gate1/htdocsF/`). Three of them
-are large:
+`make site` produces one directory (`out/site/`). Three files in it are large:
 
 | File | Size | Where it goes |
 |------|------|---------------|
-| `load-rootfsB.data` (the Ubuntu disk) | ~874 MiB | **R2** |
-| `load-state.data` (the saved running state) | ~297 MiB | **R2** |
+| `load-rootfsB.data` (the Ubuntu disk) | ~1.0 GB | **R2** |
+| `load-state.data` (the saved running state) | ~300 MiB | **R2** |
 | `qemu-system-x86_64.wasm` (the engine) | ~39 MiB | **R2** |
 | the page, JS, `load-kernel.data` (17 MiB), ROM, lab disk, `vendor/` | each < 25 MiB | **Static Assets** |
+
+Sizes drift with the guest image — the rootfs grew from ~874 MiB when man pages
+and a real free-space target were added. `pack-site.sh` prints the current
+split, and `split.sh` fails rather than deploy anything over the 25 MiB cap, so
+neither number needs to be trusted from this table.
 
 Cloudflare's static hosting (Pages / Workers Static Assets) rejects any single
 file over **25 MiB**, so the big three cannot be static files. They live in a
@@ -254,10 +294,14 @@ made it into the deploy.
 
 ## Updating later
 
-- **Changed the page/JS only:** re-run `./deploy/split.sh`, then
-  `cd deploy && npx wrangler deploy`. No R2 changes needed.
-- **Rebuilt the guest image or snapshot:** re-upload whichever of the three big
-  files changed (Steps 3–4), then redeploy. R2 objects are content-addressed by
+- **Changed the page/JS only:** re-run `./deploy/split.sh out/site`, then
+  `cd deploy && npx wrangler deploy`. No R2 changes needed — the page scripts
+  are taken from the tracked `web/` tree, so a rebuild is not required either.
+- **Rebuilt the guest image or snapshot:** re-run `make site` against the new
+  artifacts, then re-upload whichever of the three big files changed (Steps
+  3–4) and redeploy. A guest-image change moves `load-rootfsB.data` and
+  `load-state.data`; the engine `.wasm` only changes when the engine does, so
+  it usually does not need re-uploading. R2 objects are content-addressed by
   you here, so overwriting the same key is fine; visitors get the new bytes
   (the immutable cache is keyed on the URL — if you need instant invalidation,
   version the key, e.g. `load-rootfsB.v2.data`, and update `worker.js`).
@@ -317,7 +361,8 @@ made it into the deploy.
 | `wrangler.jsonc` | Worker + Static Assets + R2 binding config |
 | `worker.js` | Serves the 3 big files from private R2 (allowlist, Range, hardened) |
 | `_headers` | Security + isolation headers for the static files (COOP/COEP, CSP, …) |
-| `split.sh` | Assembles `public/` from a build and prints the upload plan |
+| `split.sh` | Assembles `public/` from a built htdocs and prints the upload plan |
+| `../scripts/pack-site.sh` | Turns the two CI artifacts into that htdocs (file_packager bundles) |
 | `public/` | Generated static site (git-ignored) |
 
 ## Troubleshooting

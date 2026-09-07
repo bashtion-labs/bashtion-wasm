@@ -50,6 +50,10 @@ That lists the files in your folder. Here are a few more safe ones to try:
 take a few seconds to finish. If nothing happens right away, wait a moment before trying again.
 It is working.
 
+**Reading the manual.** Every command has a manual page. Type `man ls` to read about `ls`, and
+press `q` to leave it. `man -k disk` searches for commands about a topic. This works with no
+internet, because the manuals are already on the machine.
+
 ## Using admin commands
 
 Some commands need admin power. In Linux, you get that by putting the word `sudo` in front of
@@ -83,16 +87,27 @@ a different computer next time, or if the browser forgets its data.
 
 ### Load work
 
-Next time you come back, click **Load work** to bring your files back.
+Next time you come back:
 
-- If you have your downloaded file, pick it when the page asks.
-- If you are on the same computer and same browser as last time, you can click **Load work**
-  and it may find your last save on its own.
+- **Load work** brings back the copy this browser remembers. If the browser has no copy, it
+  asks you for a file instead.
+- **Load from a file...** always asks you for a file — use this one for a file you downloaded,
+  or on a different computer.
 
 A window shows the progress, and then your files are back.
 
 **Best habit:** Always use **Download my work** and keep the file. It is the safe way. The
 browser's own memory can be erased, especially on shared or managed computers.
+
+### What gets saved
+
+Your home folder, and any changes you made to system settings — files you edited in `/etc`,
+users and groups you created, cron jobs you set up, folders you made in `/opt`. Anything you
+deleted stays deleted.
+
+**Programs you installed with `apt install` are not saved.** They are too big to travel the
+way saving works here. If you need one after loading your work back, install it again — it
+takes a moment and needs no internet.
 
 ## Things to know
 
@@ -100,6 +115,11 @@ browser's own memory can be erased, especially on shared or managed computers.
   not work, and that is expected. But `ping 127.0.0.1` (talking to itself) does work.
 - **Installing programs.** You can install some programs with `sudo apt install`, but only the
   ones that were packed in ahead of time. It will not download new ones from the internet.
+  Try `sudo apt install tree` to see it work.
+- **A spare disk.** There is a second, empty 1 GB disk called `/dev/vdb`. Use it for anything
+  large, and for practising with partitions and filesystems. The main disk is small.
+- **The window size.** The screen fits your browser window. If you make the window bigger, you
+  get more room. `stty size` tells you how many rows and columns you have.
 - **It's your own computer.** Anything you do only affects your browser tab. You cannot break
   anyone else's system, and you cannot harm your real computer. If something goes wrong, just
   reload the page and start fresh.
@@ -120,6 +140,15 @@ Click once on the black screen first, then type. The page needs to know you are 
 **Everything is very slow.**
 That is normal. This is a whole Linux computer running inside your browser. Give commands a few
 seconds to finish.
+
+**Saving or loading is taking a long time.**
+The progress bar is moving, so it is working. Everything has to travel through a slow
+connection between the page and the Linux system, so a lot of files take a while. If something
+really does go wrong, the window tells you — it does not just sit there.
+
+**The clock looks wrong.**
+It is set from your computer's clock when the session starts. If you leave the tab for a long
+time it can drift; `sudo date -s "..."` sets it again.
 
 **I lost my files.**
 If you did not download them, they are gone — reload and start again. Next time, use

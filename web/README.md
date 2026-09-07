@@ -18,10 +18,21 @@ JS bundle (`out.js`) plus a `.wasm` and a pthread worker.
 - `bootscreen.js` — the startup overlay: an ASCII bastion banner shown over the terminal
   until a shell prompt appears, at which point it clears the guest screen and reveals a clean
   prompt. Hides all SeaBIOS/kernel/systemd output.
-- `serialfs.js` — Save/Load of the user's home directory. The engine's real filesystem
-  lives in the wasm worker where page JavaScript cannot see it, so transfers ride the serial
-  console: the guest tars its home to base64 between `BWT-BEGIN`/`BWT-END` sentinels; the page
-  decodes to a downloaded `.tgz` and a browser (OPFS) copy. Behind a progress overlay.
+- `serialtap.js` — the page's plain-text mirror of the guest console
+  (`window.__serial`), which the boot screen, save/load and tests all read. One
+  streaming UTF-8 decoder for the session: xterm-pty emits fixed 4096-byte
+  chunks, so decoding each chunk separately replaced every multi-byte sequence
+  that straddled a boundary with U+FFFD.
+- `termfit.js` — sizes the xterm grid to the window and produces the `stty rows R cols C`
+  the guest has to be told, since a serial console carries no window-size signal.
+- `serialfs.js` — Save/Load of the session. The engine's real filesystem lives in the wasm
+  worker where page JavaScript cannot see it, so transfers ride the serial console. What is
+  captured is decided guest-side by `/usr/local/sbin/bashtion-{pack,unpack}` (source in
+  `image/seed/`); the page moves the bytes. Two rules shape the protocol: the payload never
+  goes through readline (which echoes and redisplays every line typed at a prompt whatever
+  `stty -echo` says), and no marker may appear literally in the command line that emits it,
+  or it matches its own echo. Blocks are acknowledged one at a time, and both directions
+  carry a byte count and a POSIX `cksum`. Behind a progress overlay.
 - `toolchain-extra.dockerfile` — layers xterm-pty into the engine's build image.
 - `xterm-pty.conf` — the COOP/COEP response headers cross-origin isolation requires.
 
@@ -42,5 +53,17 @@ fetches (e.g. disks from object storage) must also satisfy CORS under COEP.
 
 The guest image ships Ubuntu 26.04, which enables shell integration by default: OSC 3008
 sequences bracket every command's output. Any code reading the serial stream must strip OSC
-sequences, not just CSI. The pages expose `window.__serial`, `window.__paste`, and
-`window.__xterm` for tests.
+sequences, not just CSI — `SERIALTAP.strip()` does. The pages expose `window.__serial`,
+`window.__paste`, `window.__xterm` and `window.__fit` for tests.
+
+Two things about `window.__serial` are easy to get wrong. It is decoded by a single streaming
+UTF-8 decoder, because xterm-pty emits fixed 4096-byte chunks that cut multi-byte sequences in
+half. And it contains the *echo* of every command line typed at the prompt, before that command
+has run — readline redisplays what it is given regardless of the tty's ECHO flag — so anything
+waiting for a marker must make sure the marker cannot appear in the command that produces it.
+
+## Tests
+
+`node --test web/test/*.test.mjs` loads the real page scripts (no bundler, no imports) into a
+browser-shaped scope and drives them against a guest mock that reproduces those two behaviours.
+CI runs it as the `web-tests` job.

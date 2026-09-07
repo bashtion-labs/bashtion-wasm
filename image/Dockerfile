@@ -38,8 +38,10 @@ COPY packages.txt /packages.txt
 RUN grep -vE '^\s*(#|$)' /packages.txt | tr '\n' ',' | sed 's/,$//' > /pkglist
 # --mode=root inside docker build requires no userns setup and is the
 # proven-working path; the tar preserves ownership and xattrs for later
-# extraction. Recommends stay off; docs are pruned but per-package copyright
-# files are kept (licence hygiene).
+# extraction. Recommends stay off; /usr/share/doc is pruned but per-package
+# copyright files are kept (licence hygiene). Man pages are NOT pruned: with no
+# network there is no way to put them back, and `man` is the first thing anyone
+# is told to reach for. They cost ~30 MB and are worth it.
 RUN mmdebstrap --arch=amd64 --variant=important --mode=root --format=tar \
       --components=main,universe \
       --include="$(cat /pkglist)" \
@@ -47,7 +49,6 @@ RUN mmdebstrap --arch=amd64 --variant=important --mode=root --format=tar \
       --aptopt='Acquire::Retries "5"' \
       --dpkgopt='path-exclude=/usr/share/doc/*' \
       --dpkgopt='path-include=/usr/share/doc/*/copyright' \
-      --dpkgopt='path-exclude=/usr/share/man/??*' \
       ${SUITE} /rootfs.tar ${MIRROR}
 
 RUN mkdir /rootfs && tar -C /rootfs --xattrs --xattrs-include='*' \
@@ -63,11 +64,12 @@ RUN getcap /rootfs/usr/bin/ping | grep -q cap_net_raw || \
 # the running kernel truthfully, which package-tooling exercises rely on.
 # the chroot needs DNS only during build; the file is removed again below
 RUN rm -f /rootfs/etc/resolv.conf && cp /etc/resolv.conf /rootfs/etc/resolv.conf
-# persist the doc/man excludes for every later in-chroot install too
+# persist the doc exclude for every later in-chroot and in-guest install too.
+# Man pages are deliberately absent from this list: a package installed from
+# the offline repo must arrive with its manual, since nothing can fetch it later.
 RUN mkdir -p /rootfs/etc/dpkg/dpkg.cfg.d && printf '%s\n' \
       'path-exclude=/usr/share/doc/*' \
       'path-include=/usr/share/doc/*/copyright' \
-      'path-exclude=/usr/share/man/??*' \
       > /rootfs/etc/dpkg/dpkg.cfg.d/90-bashtion-trim
 RUN chroot /rootfs apt-get update && \
     chroot /rootfs apt-get install -y --no-install-recommends linux-image-virtual
@@ -109,9 +111,12 @@ for want in open('/modules-keep.txt'):
     want = want.split('#')[0].strip()
     if not want:
         continue
+    # a leading '?' marks a module this kernel is allowed not to have
+    optional, want = (True, want[1:]) if want.startswith('?') else (False, want)
     p = norm(want)
     if p is None:
-        missing.append(want)
+        if not optional:
+            missing.append(want)
         continue
     stack = [p]
     while stack:
@@ -142,7 +147,8 @@ RUN KVER=$(cat /kver); chroot /rootfs depmod "$KVER" && du -sh /rootfs/lib/modul
 RUN KVER=$(cat /kver); ok=1; \
     for m in dm_mod dm_snapshot dm_mirror dm_thin_pool quota_v2 quota_tree \
              9p 9pnet_virtio ip_tables iptable_filter nf_conntrack \
-             xt_conntrack xt_limit ipt_REJECT overlay virtio_blk virtio_pci; do \
+             nf_tables nft_compat xt_conntrack xt_limit xt_tcpudp xt_addrtype \
+             ipt_REJECT ip6t_rt xt_hl overlay virtio_blk virtio_pci; do \
       if modinfo -b /rootfs -k "$KVER" "$m" >/dev/null 2>&1; then continue; fi; \
       if grep -qE "(/|^)$(echo $m | tr _ -)\.ko" /rootfs/lib/modules/$KVER/modules.builtin 2>/dev/null || \
          grep -qE "(/|^)${m}\.ko" /rootfs/lib/modules/$KVER/modules.builtin 2>/dev/null; then continue; fi; \
@@ -151,6 +157,16 @@ RUN KVER=$(cat /kver); ok=1; \
 
 # ------------------------------------------------------- guest customization
 COPY seed/ /seed/
+# The seed tree is the guest's own files: /usr/local/{sbin,lib}/bashtion, the
+# save/restore helpers the page drives. What a session captures is decided
+# there, in the guest, where it can be read and tested - not in a page string.
+RUN set -e; tar -C /seed -cf - . | tar -C /rootfs -xf -; \
+    chmod 755 /rootfs/usr/local/sbin/bashtion-pack \
+              /rootfs/usr/local/sbin/bashtion-unpack \
+              /rootfs/usr/local/sbin/bashtion-baseline \
+              /rootfs/usr/local/lib/bashtion/state.py; \
+    chroot /rootfs python3 -c 'import py_compile; py_compile.compile("/usr/local/lib/bashtion/state.py", doraise=True)'; \
+    rm -rf /rootfs/usr/local/lib/bashtion/__pycache__
 RUN set -e; \
     echo bashtion > /rootfs/etc/hostname; \
     printf '127.0.0.1\tlocalhost\n127.0.1.1\tbashtion\n' > /rootfs/etc/hosts; \
@@ -161,13 +177,55 @@ RUN set -e; \
     chmod 440 /rootfs/etc/sudoers.d/user; \
     echo 'user:changeme' | chroot /rootfs chpasswd; \
     echo 'root:root' | chroot /rootfs chpasswd
+# Stock Ubuntu puts the first user in adm; without it journalctl exits 1 and,
+# piped into anything, the permission error goes to stderr while the pipeline
+# prints a completely believable "0". Nothing on screen contradicts it.
+# systemd-journal is granted the same read access and is added where present.
+RUN set -e; \
+    chroot /rootfs usermod -aG adm user; \
+    if chroot /rootfs getent group systemd-journal >/dev/null; then \
+      chroot /rootfs usermod -aG systemd-journal user; \
+    else echo "note: no systemd-journal group in this suite"; fi; \
+    groups=$(chroot /rootfs id -Gn user); echo "user groups: $groups"; \
+    for g in sudo adm; do \
+      echo "$groups" | tr ' ' '\n' | grep -qx "$g" || \
+        { echo "FATAL: user is not in $g"; exit 1; }; \
+    done
+# Locale. Nothing set one before, so LANG was unset and the shell ran in the
+# C locale: readline then treats every byte of a multi-byte character as its
+# own cell, the tty line discipline is left without IUTF8, and anything
+# non-ASCII garbles on the way through. C.UTF-8 is built into glibc, so this
+# costs no locale-data package.
+RUN set -e; \
+    chroot /rootfs locale -a | tr 'A-Z' 'a-z' | grep -qE '^c\.utf-?8$' || \
+      { echo "FATAL: C.UTF-8 not available"; chroot /rootfs locale -a; exit 1; }; \
+    printf 'LANG=C.UTF-8\n' > /rootfs/etc/default/locale; \
+    grep -q '^LANG=' /rootfs/etc/environment 2>/dev/null || \
+      printf 'LANG=C.UTF-8\n' >> /rootfs/etc/environment; \
+    printf '%s\n' \
+      '# bashtion: a UTF-8 locale, and a tty told about it.' \
+      'export LANG="${LANG:-C.UTF-8}"' \
+      'if [ -t 0 ]; then stty iutf8 2>/dev/null || true; fi' \
+      > /rootfs/etc/profile.d/00-bashtion-locale.sh; \
+    chmod 644 /rootfs/etc/profile.d/00-bashtion-locale.sh
+
 # fstab: root passno 0 (no initramfs fsck path); 9p share is optional at boot
 RUN printf '%s\n' \
       '/dev/vda / ext4 defaults,errors=remount-ro 0 0' \
-      'share0 /home/user/persist 9p trans=virtio,version=9p2000.L,msize=512000,cache=loose,rw,noauto,nofail 0 0' \
+      'share0 /home/user/share 9p trans=virtio,version=9p2000.L,msize=512000,cache=loose,rw,noauto,nofail 0 0' \
       > /rootfs/etc/fstab && \
-    mkdir -p /rootfs/home/user/persist && \
-    chroot /rootfs chown user:user /home/user/persist
+    mkdir -p /rootfs/home/user/share && \
+    printf '%s\n' \
+      'This directory is the mount point for the optional 9p host share' \
+      '(mount tag share0, noauto in /etc/fstab). In the browser there is no' \
+      'host directory behind it, so it stays empty unless you mount it.' \
+      '' \
+      'It used to be called persist, which promised something nothing here' \
+      'does: NOTHING on this machine is saved automatically. Everything in' \
+      'your home directory, this directory included, is saved when - and only' \
+      'when - you use "Download my work".' \
+      > /rootfs/home/user/share/README && \
+    chroot /rootfs chown -R user:user /home/user/share
 # lvm: without this, fresh virtio disks are invisible to pvcreate on noble
 RUN mkdir -p /rootfs/etc/lvm && \
     printf 'devices {\n\tuse_devicesfile = 0\n}\n' > /rootfs/etc/lvm/lvm.conf.d-bashtion.conf 2>/dev/null; \
@@ -183,7 +241,7 @@ RUN mkdir -p /rootfs/etc/lvm && \
 # command-line tools the storage exercises use.
 RUN for u in systemd-networkd.service systemd-networkd-wait-online.service \
              systemd-timesyncd.service apt-daily.timer apt-daily-upgrade.timer \
-             networkd-dispatcher.service \
+             networkd-dispatcher.service systemd-resolved.service \
              motd-news.timer man-db.timer e2scrub_all.timer fstrim.timer \
              keyboard-setup.service console-setup.service \
              lvm2-monitor.service blk-availability.service \
@@ -258,20 +316,124 @@ RUN set -e; mkdir -p /rootfs/srv/apt; \
       chroot /rootfs sh -c "cd /srv/apt && apt-get update -qq && \
         apt-get install --print-uris -qq --no-install-recommends $pkgs 2>/dev/null | \
         cut -d\\' -f2 | grep '^http' | xargs -r -n1 curl -fsSLO"; \
-    fi; \
-    chroot /rootfs sh -c "cd /srv/apt && dpkg-scanpackages . /dev/null | gzip > Packages.gz"; \
+    fi
+# Index the repo from the BUILDER, not the chroot: dpkg-scanpackages ships in
+# dpkg-dev, which the guest deliberately does not carry. Run inside the chroot
+# it is simply "not found", and because the old form piped it straight into
+# gzip the pipeline still exited 0 - so the image shipped a 20-byte empty
+# gzip and apt could not see a single one of the .debs sitting next to it.
+# Scan to a file, ASSERT the index covers every .deb, and only then compress.
+RUN set -e; \
+    ( cd /rootfs/srv/apt && dpkg-scanpackages . /dev/null > /tmp/Packages ); \
+    debs=$(find /rootfs/srv/apt -name '*.deb' | wc -l | tr -d ' '); \
+    indexed=$(grep -c '^Package: ' /tmp/Packages || true); \
+    echo "srv/apt: ${debs} .debs, ${indexed} indexed"; \
+    [ "$debs" -gt 0 ] || { echo "FATAL: /srv/apt has no .deb files"; exit 1; }; \
+    [ "$indexed" = "$debs" ] || { echo "FATAL: index covers ${indexed}/${debs} packages"; exit 1; }; \
+    install -m644 /tmp/Packages /rootfs/srv/apt/Packages; \
+    gzip -9c /tmp/Packages > /rootfs/srv/apt/Packages.gz; \
+    [ -s /rootfs/srv/apt/Packages.gz ] && \
+      [ "$(gzip -dc /rootfs/srv/apt/Packages.gz | wc -c)" -gt 0 ] || \
+      { echo "FATAL: Packages.gz is empty"; exit 1; }; \
     printf 'deb [trusted=yes] file:/srv/apt ./\n' > /rootfs/etc/apt/sources.list.d/local.list; \
     rm -f /rootfs/etc/apt/sources.list.d/ubuntu.sources; \
     rm -rf /rootfs/var/lib/apt/lists/* /rootfs/var/cache/apt/*.bin; \
     chroot /rootfs apt-get update
+# apt must actually offer every package sitting in the repo from the local
+# origin - the symptom being fixed was `apt install tree` falling through to
+# the network with the .deb in the repo apt had just consulted. Packages that
+# are already installed are legitimately absent from /srv/apt (apt has nothing
+# to fetch for them), so they are reported, not required.
+RUN set -e; \
+    for deb in /rootfs/srv/apt/*.deb; do \
+      name=$(dpkg-deb -f "$deb" Package); \
+      chroot /rootfs apt-cache policy "$name" | grep -q 'file:/srv/apt' || { \
+        echo "FATAL: $name is in /srv/apt but apt does not offer it"; \
+        chroot /rootfs apt-cache policy "$name"; exit 1; }; \
+      echo "  local: $name"; \
+    done; \
+    for p in $(grep -vE '^\s*(#|$)' /extra-packages.txt); do \
+      if chroot /rootfs apt-cache policy "$p" | grep -q 'file:/srv/apt'; then continue; fi; \
+      chroot /rootfs dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'install ok installed' || { \
+        echo "FATAL: $p is neither installed nor installable offline"; \
+        chroot /rootfs apt-cache policy "$p"; exit 1; }; \
+      echo "  preinstalled: $p"; \
+    done; \
+    echo "local repo verified"
+
+# ------------------------------------------------------------- manual pages
+# The image used to ship path-exclude=/usr/share/man/??*, so no command on the
+# system had a manual page and, with no network, none could be put back:
+# `man ls` said "No manual entry for ls", which reads as a missing page rather
+# than a stripped feature. Pages now ship; build the apropos/whatis index here
+# so `man -k` works offline too (man-db.timer is masked, so nothing would
+# otherwise ever build it).
+RUN set -e; \
+    chroot /rootfs mandb --create --quiet || chroot /rootfs mandb --create; \
+    pages=$(find /rootfs/usr/share/man -name '*.gz' | wc -l | tr -d ' '); \
+    echo "man pages: ${pages}, $(du -sh /rootfs/usr/share/man | cut -f1)"; \
+    [ "$pages" -gt 500 ] || { echo "FATAL: only ${pages} man pages present"; exit 1; }; \
+    for m in man1/ls.1.gz man1/bash.1.gz man8/mount.8.gz man5/fstab.5.gz; do \
+      [ -e "/rootfs/usr/share/man/$m" ] || { echo "FATAL: missing man page $m"; exit 1; }; \
+    done; \
+    chroot /rootfs man -w ls >/dev/null || { echo "FATAL: man cannot resolve ls"; exit 1; }; \
+    chroot /rootfs man -k ls >/dev/null 2>&1 || { echo "FATAL: apropos index empty"; exit 1; }
+
+# ------------------------------------------------- deliberately offline
+# QEMU is started with -nic none: loopback is the only network, by design.
+# The guest was left mid-configuration rather than coherently offline - an
+# empty /etc/netplan, a zero-byte /etc/resolv.conf, and a live systemd-resolved
+# stub listening with no nameserver behind it. That reads as a broken machine
+# rather than a deliberate one, and every lookup blocked for minutes first.
+#
+# systemd-resolved is masked above. Give resolv.conf real content: with no
+# nameserver line glibc falls back to 127.0.0.1, where nothing is listening,
+# so resolution fails immediately and says so instead of timing out.
+RUN set -e; \
+    rm -f /rootfs/etc/resolv.conf; \
+    printf '%s\n' \
+      '# bashtion has no network interface: QEMU is started with -nic none.' \
+      '# There is no nameserver to point at, and nothing here is misconfigured.' \
+      '# Name resolution fails immediately and deliberately. See /etc/motd.' \
+      'options timeout:1 attempts:1' \
+      > /rootfs/etc/resolv.conf; \
+    chmod 644 /rootfs/etc/resolv.conf; \
+    mkdir -p /rootfs/etc/netplan; \
+    printf '%s\n' \
+      'This directory is intentionally free of .yaml files.' \
+      '' \
+      'bashtion has no network interface, so there is nothing for netplan to' \
+      'configure. `ip link` shows loopback and nothing else, and `ip route`' \
+      'prints nothing because there are no routes - not because it failed.' \
+      > /rootfs/etc/netplan/README-no-network; \
+    chmod 644 /rootfs/etc/netplan/README-no-network
+
+# The one screen everyone sees. The boot screen clears the console and prints
+# this before handing over, so the things that are otherwise undiscoverable -
+# no network by design, a spare disk nobody mentions, work that is not saved
+# unless you save it - are stated once, up front.
+RUN set -e; rm -f /rootfs/etc/motd; printf '%s\n' \
+      '' \
+      '  bashtion - a real Linux system, running in your browser tab.' \
+      '' \
+      '  Network   None, by design. Loopback works (ping 127.0.0.1); nothing' \
+      '            outside this VM is reachable. `apt install` is served from' \
+      '            the offline repository in /srv/apt.' \
+      '  Storage   / has limited room. /dev/vdb is a spare 1 GB disk, empty and' \
+      '            unpartitioned - use it for partitioning, LVM and quota work.' \
+      '  Saving    Nothing is saved automatically. Use "Download my work"' \
+      '            before you close the tab.' \
+      '  Docs      Manual pages are installed: try `man man` or `man -k disk`.' \
+      '' \
+      > /rootfs/etc/motd; \
+    chmod 644 /rootfs/etc/motd; cat /rootfs/etc/motd
 
 # --------------------------------------------------------------- trim pass
-RUN rm -f /rootfs/etc/resolv.conf && touch /rootfs/etc/resolv.conf
 RUN set -e; \
     rm -rf /rootfs/usr/share/vim/vim*/doc /rootfs/usr/share/vim/vim*/tutor \
            /rootfs/usr/share/vim/vim*/spell /rootfs/usr/share/vim/vim*/lang \
            /rootfs/usr/share/zoneinfo/right /rootfs/usr/share/zoneinfo/posix \
-           /rootfs/var/cache/apt/archives /rootfs/var/cache/man \
+           /rootfs/var/cache/apt/archives \
            /rootfs/usr/share/icons /rootfs/usr/share/fonts; \
     # keep only English message catalogs
     find /rootfs/usr/share/locale -mindepth 1 -maxdepth 1 \
@@ -283,13 +445,69 @@ RUN set -e; \
 # size evidence in the build log: top consumers before the image is cut
 RUN du -x --max-depth=2 --block-size=1M /rootfs 2>/dev/null | sort -rn | head -25
 
+# ---------------------------------------------------------- session baseline
+# Record what the image ships as, so a save can send only what a session
+# actually changed. Without it every save would have to carry all of /etc
+# across a serial console at a few hundred bytes a second. This must be the
+# LAST thing that touches the rootfs, or whatever came after would look
+# "changed" in every session.
+RUN set -e; chroot /rootfs /usr/local/sbin/bashtion-baseline; \
+    lines=$(wc -l < /rootfs/usr/local/lib/bashtion/baseline.tsv); \
+    echo "baseline: ${lines} paths"; \
+    [ "$lines" -gt 100 ] || { echo "FATAL: baseline looks empty"; exit 1; }
+# and prove a round trip works before the image is cut
+RUN set -e; \
+    echo canary > /rootfs/home/user/.bashtion-canary; \
+    chroot /rootfs sh -c '/usr/local/sbin/bashtion-pack > /tmp/probe.tgz 2>/tmp/probe.err'; \
+    cat /rootfs/tmp/probe.err; \
+    sz=$(stat -c %s /rootfs/tmp/probe.tgz); echo "pack probe: ${sz} bytes"; \
+    [ "$sz" -gt 100 ] || { echo "FATAL: bashtion-pack produced nothing"; exit 1; }; \
+    tar tzf /rootfs/tmp/probe.tgz | grep -q '^home/user/.bashtion-canary$' || \
+      { echo "FATAL: pack did not include a home file"; exit 1; }; \
+    tar tzf /rootfs/tmp/probe.tgz | grep -q '^home/user/share/' || \
+      { echo "FATAL: pack excluded the share directory"; exit 1; }; \
+    rm -f /rootfs/tmp/probe.tgz /rootfs/tmp/probe.err /rootfs/home/user/.bashtion-canary; \
+    chroot /rootfs /usr/local/sbin/bashtion-baseline
+
 # ------------------------------------------------------------- disk images
-# root: measured content + headroom for user-created files
-RUN size_kb=$(du -s --block-size=1024 /rootfs | cut -f1); \
-    size_mb=$(( size_kb / 1024 * 108 / 100 + 64 )); \
-    echo "rootfs ${size_mb}M"; \
-    mke2fs -q -t ext4 -J size=16 -L bashtion-root -d /rootfs -b 4096 \
+# root: measured content + a real free-space TARGET.
+#
+# The old sizing was content x1.08 + 64 MB. ext4's own metadata (inode tables,
+# journal, group descriptors) and the default 5% root reserve then ate most of
+# that, and the image shipped 95% full with ~46 MB free - not enough for
+# ordinary work, and the reason `fallocate -l 10G` gets far enough to leave an
+# 85 MB stub before failing and takes the disk to 100%.
+#
+# Size for content PLUS a stated free-space target, and drop the root reserve
+# to 1%: this is a single-user disposable VM, and 5% held back ~40 MB for a
+# fsck that has nowhere to run. The ceiling is real - the whole rootfs image is
+# resident in the wasm heap (-sTOTAL_MEMORY=2300MB, shared with 512 MB of guest
+# RAM and the 128 MB TB cache) - so FREE_MB is a deliberate balance and
+# /dev/vdb (1 GB, qcow2, grows on write) is the place for anything large.
+ARG FREE_MB=192
+RUN set -e; content_mb=$(( $(du -s --block-size=1024 /rootfs | cut -f1) / 1024 )); \
+    size_mb=$(( (content_mb + ${FREE_MB}) * 108 / 100 )); \
+    echo "rootfs: ${content_mb}M content + ${FREE_MB}M target -> ${size_mb}M volume"; \
+    mke2fs -q -t ext4 -J size=16 -m 1 -L bashtion-root -d /rootfs -b 4096 \
       /out/rootfs.ext4 ${size_mb}M
+# ...and prove it, in the units df will report to the user.
+RUN python3 - <<'PYEOF'
+import re, subprocess, sys
+out = subprocess.run(['dumpe2fs', '-h', '/out/rootfs.ext4'],
+                     capture_output=True, text=True).stdout
+def field(name):
+    m = re.search(r'^%s:\s+(\d+)\s*$' % name, out, re.M)
+    if not m:
+        raise SystemExit('FATAL: dumpe2fs did not report %r' % name)
+    return int(m.group(1))
+total, free = field('Block count'), field('Free blocks')
+resv, bs = field('Reserved block count'), field('Block size')
+avail_mb = (free - resv) * bs // 1048576
+print('rootfs: %d MiB available to the user, %d%% full'
+      % (avail_mb, (total - free) * 100 // total))
+if avail_mb < 150:
+    raise SystemExit('FATAL: only %d MiB free on /' % avail_mb)
+PYEOF
 # verify the capability xattr survived mke2fs -d
 RUN debugfs -R 'ea_list /usr/bin/ping' /out/rootfs.ext4 2>/dev/null | \
       grep -q security.capability || { echo "FATAL: cap xattr lost in ext4"; exit 1; }

@@ -1,0 +1,3 @@
+#!/bin/sh
+# See /usr/local/lib/bashtion/state.py for what is captured and why.
+exec /usr/bin/python3 /usr/local/lib/bashtion/state.py baseline "$@"

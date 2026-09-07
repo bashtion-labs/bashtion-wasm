@@ -19,7 +19,8 @@ The requirement that drives every decision here is **full system-administration 
 - disk quotas — `quotacheck` / `quotaon` / `edquota` / `repquota`
 - a second writable block device (`/dev/vdb`) for storage work
 - netfilter, so `iptables` and `ufw` function
-- 9p/virtio for a home directory the browser can save and restore
+- 9p/virtio, for a host share the guest can mount (`~/share`; unused in the browser,
+  where save/restore rides the serial console instead)
 - an unprivileged user with `sudo`, where privileged operations genuinely fail without it
 
 Every one of these lives in the Linux kernel. That rules out the browser-Linux projects that
@@ -94,15 +95,42 @@ shell is ready the scrollback is cleared and a clean `user@bashtion:~$` is revea
 ## Saving work
 
 The engine's authoritative filesystem lives in the wasm worker, where the page's JavaScript
-cannot see guest writes (measured). So save/restore travels over the **serial console**: the
-guest tars its home directory to base64 between sentinels, the page decodes it. Two buttons:
+cannot see guest writes (measured). So save/restore travels over the **serial console**, which
+constrains both what can be sent and how.
 
-- **Download my work** — hands you a `.tgz` file you keep (and also remembers a copy
+**What is captured** is decided in the guest, by `/usr/local/sbin/bashtion-pack` (source in
+`image/seed/`), so it can be read and tested there rather than buried in a page string:
+
+- all of `/home/user`;
+- everything under `/etc`, `/opt`, `/srv`, `/usr/local`, `/root` and `/var/spool/cron` that
+  **differs** from the image it shipped as, against a baseline recorded at build time - so the
+  user/group/shadow databases, `sudoers`, `fstab` and cron jobs come back, without sending
+  ~2000 untouched files down a serial line;
+- deletions, so removing a file is a change like any other;
+- ACLs and capability xattrs.
+
+Installed packages (`/var/lib/dpkg` plus their unpacked files) and `/var` generally are **not**
+captured - they are far too large for this channel. `apt install` from the offline repo has to
+be repeated after a restore. The UI says so at save time.
+
+**How it travels.** The payload is fed to a command reading the tty directly (`head -c N`),
+never to a heredoc: readline echoes and redisplays every line typed at an interactive prompt
+whatever `stty -echo` says, which sent the archive down the wire twice and redrew each 4 KB
+line character by character. Blocks are acknowledged one at a time - the tty discards input
+once its 4 KB line-discipline buffer fills and a uart has no XON/XOFF, so an ack is the only
+flow control there is. Both directions carry a byte count and a POSIX `cksum`, so a lost or
+duplicated byte is reported before anything is unpacked, rather than surfacing as a confusing
+tar error.
+
+Two buttons:
+
+- **Download my work** - hands you a `.tgz` file you keep (and also remembers a copy
   in the browser). A file survives a wiped browser profile or a different machine, which is
   the real safety net on managed devices.
-- **Load work** — restores from a chosen file, or from the browser-remembered copy.
+- **Load work** - restores the copy this browser remembers; **Load from a file...** takes one
+  you downloaded.
 
-Both hide the raw transfer behind a progress overlay and clear the scrollback afterward, so a
+Both hide the raw transfer behind a progress overlay and clear the scrollback afterward, so
 you see only "Saving your work..." and a completion tick, never a wall of base64.
 
 ## Known limits
@@ -110,6 +138,11 @@ you see only "Saving your work..." and a completion tick, never a wall of base64
 - **No external network.** Browsers have no raw sockets, so `ping` and `traceroute` to the
   internet cannot work. Loopback is real: `ping 127.0.0.1` behaves normally, and `apt install`
   is served from a small repository baked into the image (offline) for the included packages.
+  The guest is configured to be *coherently* offline rather than half-configured:
+  `systemd-resolved` is masked, `/etc/resolv.conf` and `/etc/netplan/` say why they are empty,
+  and `/etc/motd` states it at the start of every session.
+- **Installed packages do not survive a save.** Everything else about a session does; see
+  "Saving work" for what travels and why the rest cannot.
 - **Boot is slow, restore is fast.** A cold systemd boot under emulation takes minutes; the
   snapshot-restore path is why a real session starts in seconds. Development boots (building a
   fresh snapshot) still pay the full cost.
@@ -120,9 +153,15 @@ you see only "Saving your work..." and a completion tick, never a wall of base64
 
 ```
 image/                  Guest image build: Ubuntu 26.04 rootfs, kernel, packages, module
-                        pruning, offline apt repo, seed files
+                        pruning, offline apt repo
+image/seed/             Files the guest ships with: /usr/local/{sbin,lib}/bashtion, the
+                        save/restore helpers the page drives
+image/test/             guest-check.py (boots the built image and asserts its behaviour)
+                        and state-roundtrip.sh (a save/restore round trip in a container)
 snapshot/               Pre-boot on native fork-tree QEMU -> vm.state (the fast-start asset)
-web/                    Browser front end: page, QEMU args, boot banner, save/load
+web/                    Browser front end: page, QEMU args, boot banner, serial tap,
+                        terminal fit, save/load
+web/test/               node --test suite over the real page scripts
 third_party/qemu        Upstream QEMU v11.1.1, pinned submodule (experimental TCI lane only)
 patches/fork/           Runtime fix applied to the fork engine build (pty read wake)
 patches/qemu/           virtfs-on-Emscripten patch for the upstream/experimental lane

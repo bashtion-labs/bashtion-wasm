@@ -1,6 +1,12 @@
 # Modules kept in the guest (plus their modules.dep closure); everything else
 # in /lib/modules is pruned at build time. A name missing as both module and
 # builtin fails the build.
+#
+# A `?` prefix means "keep it if this kernel has it". Netfilter in particular
+# keeps folding small expression modules into nf_tables itself (nft_counter
+# went that way), and a name that is now part of the core is neither a module
+# nor listed in modules.builtin. The hard requirements are asserted separately
+# in the Dockerfile, so optional here does not mean unchecked.
 # storage administration
 dm_mod
 dm_snapshot
@@ -13,25 +19,64 @@ quota_tree
 # shared home directory
 9p
 9pnet_virtio
-# firewalling
+# firewalling.
+#
+# Ubuntu's iptables is iptables-nft: every `-m conntrack`, `-p tcp`, `-m limit`
+# and friend in ufw's default ruleset is instantiated through nft_compat, the
+# xtables-over-nftables shim. Without it `ufw enable` fails ufw-init with
+# "Extension <name> revision 0 not supported, missing kernel module?" for each
+# one, and leaves the kernel default-deny with no rules loaded while
+# `ufw status` reports the firewall active - loopback included, which is how a
+# local curl ends up hanging for 317 s. Keep the shim and the extensions ufw's
+# before/after/user rules actually reference, for both address families.
 ip_tables
 ip6_tables
 iptable_filter
 ip6table_filter
 iptable_mangle
+?ip6table_mangle
+?iptable_nat
+?nf_nat
 nf_conntrack
+?nf_defrag_ipv4
+?nf_defrag_ipv6
 nf_tables
+nft_compat
+?nft_chain_nat
+?nft_counter
+?nft_limit
+?nft_log
+?nft_reject
+?nft_reject_ipv4
+?nft_reject_ipv6
+?nf_log_syslog
 xt_conntrack
+xt_tcpudp
 xt_limit
 xt_multiport
 xt_addrtype
 xt_comment
 xt_recent
+?xt_mark
 xt_LOG
 xt_MASQUERADE
 ipt_REJECT
+?ip6t_REJECT
+# ufw's before6.rules matches on the IPv6 routing header and hop limit
+# (-m rt --rt-type 0, -m hl --hl-eq 255). Without these ufw-init fails on the
+# v6 half - which fails the whole of `ufw enable` - even when v4 is perfect.
+# The hop-limit match is xt_hl, not ip6t_hl: it was merged with the IPv4 ttl
+# match years ago and one module now serves both families.
+ip6t_rt
+xt_hl
+?ip6t_ah
+?ip6t_frag
+?ip6t_ipv6header
+?ip6t_mh
 nf_reject_ipv4
+?nf_reject_ipv6
 # misc the labs touch
+?rtc_cmos
 overlay
 autofs4
 binfmt_misc

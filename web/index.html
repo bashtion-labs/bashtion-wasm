@@ -15,13 +15,16 @@
     <div id="status">loading…</div>
     <div id="controls" style="position:fixed;top:4px;right:8px;font:12px system-ui">
       <span id="sfsStatus" style="color:#9a9a9a;margin-right:8px"></span>
-      <button id="exportBtn" title="Download your home directory as a file you keep (also remembered in this browser)">Download my work</button>
-      <label><input type="file" id="importInp" hidden>
-        <button onclick="document.getElementById('importInp').click()" title="Restore from a downloaded file, or your last download in this browser">Load work</button></label>
+      <button id="exportBtn" title="Download your session as a file you keep (also remembered in this browser)">Download my work</button>
+      <button id="loadBtn" title="Restore the copy this browser remembers, or ask for a file if there is none">Load work</button>
+      <button id="loadFileBtn" title="Restore from a downloaded file">Load from a file…</button>
+      <input type="file" id="importInp" hidden>
     </div>
     <div id="terminal"></div>
     <script src="./vendor/xterm.js"></script>
     <script src="./vendor/xterm-pty.js"></script>
+    <script src="./serialtap.js"></script>
+    <script src="./termfit.js"></script>
     <script src="./serialfs.js"></script>
     <script src="./bootscreen.js"></script>
     <script src="./module.js"></script>
@@ -72,12 +75,13 @@
         })().catch((e) => status('FAILED: ' + e.message));
       });
 
+      const termEl = document.getElementById('terminal');
       const xterm = new Terminal({ scrollback: 5000 });
-      xterm.open(document.getElementById('terminal'));
+      xterm.open(termEl);
       const { master, slave } = openpty();
       xterm.loadAddon(master);
-      window.__serial = ''; window.__paste = (t) => xterm.paste(t); window.__xterm = xterm;
-      master.onWrite(([buf]) => { window.__serial += new TextDecoder().decode(buf); });
+      window.__paste = (t) => xterm.paste(t); window.__xterm = xterm;
+      SERIALTAP.install(master);
       Module.pty = slave;
       Module.mainScriptUrlOrBlob = new URL('./out.js', location.href).href;
 
@@ -111,10 +115,35 @@
           status('resumed - your session is exactly where it was');
         })();
       }
+      window.__fit = () => TERMFIT.fit(xterm, termEl, window);
+      const geomSync = TERMFIT.makeSync({
+        geometry: () => ({ cols: xterm.cols, rows: xterm.rows }),
+        canSend: () => window.__booted && !SERIALFS.isBusy() && SERIALTAP.atPrompt(window),
+        send: (text) => xterm.paste(text),
+      });
+      window.__geomSync = geomSync;
+      (function settle(n) {
+        if (TERMFIT.measure(xterm, termEl, window)) { window.__fit(); return; }
+        if (n > 0) setTimeout(() => settle(n - 1), 250);
+      })(12);
+      let resizeTimer;
+      window.addEventListener('resize', () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => { window.__fit(); geomSync.request(); }, 400);
+      });
+
       window.__sfsStatus = (m) => document.getElementById('sfsStatus').textContent = m;
-      document.getElementById('exportBtn').onclick = () => SERIALFS.download();
-      document.getElementById('importInp').onchange = (e) => { if (e.target.files[0]) SERIALFS.load(e.target.files[0]); e.target.value = ''; };
-      SERIALFS.hasSaved().then((h) => { if (h) window.__sfsStatus('saved work found — Load work restores it'); });
+      const importInp = document.getElementById('importInp');
+      const refreshSaved = () => SERIALFS.hasSaved().then((h) => {
+        window.__sfsStatus(h ? 'saved work found in this browser' : ''); return h;
+      });
+      document.getElementById('exportBtn').onclick = async () => { await SERIALFS.download(); refreshSaved(); };
+      document.getElementById('loadBtn').onclick = async () => {
+        if (await SERIALFS.hasSaved()) SERIALFS.load(); else importInp.click();
+      };
+      document.getElementById('loadFileBtn').onclick = () => importInp.click();
+      importInp.onchange = (e) => { if (e.target.files[0]) SERIALFS.load(e.target.files[0]); e.target.value = ''; };
+      refreshSaved();
     </script>
   </body>
 </html>

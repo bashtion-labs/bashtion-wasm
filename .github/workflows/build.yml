@@ -13,6 +13,23 @@ permissions:
   contents: read
 
 jobs:
+  # Page-side unit tests: the browser half is plain classic scripts with no
+  # bundler, so node --test loads the real files and drives them directly.
+  web-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test web/test/*.test.mjs
+
+      # The guest save/restore helpers, round-tripped in a throwaway container:
+      # real tar, real ACLs, real users, and the archive-supplied deletion list
+      # that has to be refused when it points outside the session.
+      - name: Guest state round trip
+        run: ./image/test/state-roundtrip.sh
+
   qemu-engine:
     runs-on: ubuntu-latest
     steps:
@@ -87,6 +104,17 @@ jobs:
 
       - name: Show manifest
         run: cat out/image/manifest.json
+
+      # Boot what was just built and assert the guest-side properties that a
+      # rootfs inspection cannot reach: the offline apt repo installing, man
+      # working, free space, journal access as the user, a coherent offline
+      # network, a firewall that loads what it reports, and a clock that keeps
+      # wall time. Every one of these shipped broken at some point.
+      - name: Install native qemu
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-system-x86
+
+      - name: Boot the image and check the guest
+        run: python3 image/test/guest-check.py out/image
 
       - uses: actions/upload-artifact@v4
         with:

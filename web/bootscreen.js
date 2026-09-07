@@ -36,16 +36,56 @@ const BOOTSCREEN = (() => {
     setInterval(() => { if (dots) dots.textContent = '.'.repeat((n = (n + 1) % 4)); }, 450);
   }
 
+  // Hand over to a cleared console that states what is otherwise
+  // undiscoverable. Everything here runs while the cover is still up, so none
+  // of it is ever seen; the `clear` at the end is what the user arrives at.
+  function handover() {
+    const cmds = [];
+    // The restored VM's wall clock is whatever it was when the snapshot was
+    // captured - typically many hours ago, and there is no NTP to correct it.
+    // The page is the only thing here that knows the real time, so it says so
+    // once, at the moment of handover, and writes it through to the RTC.
+    const epoch = Math.floor(Date.now() / 1000);
+    cmds.push('sudo date -u -s @' + epoch + ' >/dev/null 2>&1');
+    cmds.push('sudo hwclock --systohc >/dev/null 2>&1');
+    // The terminal is whatever shape the browser window is; the guest's tty
+    // is still the kernel's 24x80 default until something tells it otherwise,
+    // and a serial console has no way to signal a resize.
+    const t = window.__xterm;
+    if (t && t.cols && t.rows && typeof TERMFIT === 'object') {
+      const geom = { cols: t.cols, rows: t.rows };
+      cmds.push(TERMFIT.stty(geom));
+      // tell the resize sync what the guest now believes, so it does not
+      // immediately repeat it - and so a later resize is a real difference
+      if (window.__geomSync) window.__geomSync.seed(geom);
+    }
+    // The guest's /etc/motd covers the deliberate absence of a network, the
+    // spare /dev/vdb, and the fact that work is not saved unless you save it.
+    // pam_motd already printed it at login, behind this very screen.
+    cmds.push('clear');
+    cmds.push('cat /etc/motd 2>/dev/null');
+    return cmds.join('; ') + '\n';
+  }
+
   function reveal() {
     if (revealed) return;
     revealed = true;
     window.__booted = true;
-    try { window.__paste && window.__paste('clear\n'); } catch (e) {}
-    setTimeout(() => {
+    // Only look at what arrives AFTER the handover is sent: the prompt that
+    // triggered the reveal is still the last thing in the buffer, and matching
+    // that would lift the cover before the guest had run any of this.
+    const from = (window.__serial || '').length;
+    try { window.__paste && window.__paste(handover()); } catch (e) {}
+    const t0 = Date.now();
+    const settle = setInterval(() => {
+      const since = stripANSI((window.__serial || '').slice(from));
+      const back = /[$#] ?$/m.test(since.slice(-200)) && since.indexOf('clear') !== -1;
+      if (!back && Date.now() - t0 < 15000) return;
+      clearInterval(settle);
       if (!el) return;
       el.style.opacity = '0';
       setTimeout(() => { el.style.display = 'none'; }, 550);
-    }, 500);
+    }, 250);
   }
 
   function start() {

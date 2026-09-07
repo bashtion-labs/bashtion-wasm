@@ -116,6 +116,12 @@
         })();
       }
       window.__fit = () => TERMFIT.fit(xterm, termEl, window);
+      const geomSync = TERMFIT.makeSync({
+        geometry: () => ({ cols: xterm.cols, rows: xterm.rows }),
+        canSend: () => window.__booted && !SERIALFS.isBusy() && SERIALTAP.atPrompt(window),
+        send: (text) => xterm.paste(text),
+      });
+      window.__geomSync = geomSync;
       (function settle(n) {
         if (TERMFIT.measure(xterm, termEl, window)) { window.__fit(); return; }
         if (n > 0) setTimeout(() => settle(n - 1), 250);
@@ -123,10 +129,7 @@
       let resizeTimer;
       window.addEventListener('resize', () => {
         clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(() => {
-          const d = window.__fit();
-          if (d && window.__booted && SERIALTAP.atPrompt(window)) xterm.paste(TERMFIT.stty(d) + '\n');
-        }, 400);
+        resizeTimer = setTimeout(() => { window.__fit(); geomSync.request(); }, 400);
       });
 
       window.__sfsStatus = (m) => document.getElementById('sfsStatus').textContent = m;

@@ -55,3 +55,28 @@ test('SERIALTAP starts each session with an empty mirror', () => {
   loadScript('serialtap.js', 'SERIALTAP', { TextDecoder }).install(fakeMaster(), win);
   assert.equal(win.__serial, '');
 });
+
+// ---------------------------------------------------------------- atPrompt
+const tap = () => loadScript('serialtap.js', 'SERIALTAP', { TextDecoder });
+const at = (mirror) => tap().atPrompt({ __serial: mirror });
+
+test('atPrompt accepts a real idle prompt', () => {
+  assert.equal(at('\r\nuser@bashtion:~$ '), true);
+  assert.equal(at('some output\r\nuser@bashtion:/etc$ '), true);
+  assert.equal(at('\r\nroot@bashtion:/home/user# '), true);
+});
+
+test('#60 atPrompt rejects a half-typed command line that ends in $', () => {
+  // the exact case the page used to inject into: someone typed `echo $` and
+  // paused to recall the variable name
+  assert.equal(at('\r\nuser@bashtion:~$ echo $'), false);
+  assert.equal(at('\r\nuser@bashtion:~$ echo $ '), false);
+  assert.equal(at('\r\nuser@bashtion:~$ awk \'{print $'), false);
+  assert.equal(at('\r\nuser@bashtion:~$ grep # '), false);
+});
+
+test('atPrompt rejects a console in the middle of output', () => {
+  assert.equal(at('\r\nReading package lists... 47%'), false);
+  assert.equal(at('\r\nuser@bashtion:~$ sudo apt install tree\r\nUnpacking tree ...'), false);
+  assert.equal(at(''), false);
+});

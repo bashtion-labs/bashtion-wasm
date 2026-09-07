@@ -27,11 +27,20 @@ const SERIALTAP = (() => {
     return w;
   }
 
-  // Is the console sitting at an idle shell prompt? Used before injecting
-  // anything the user did not type, so it cannot land mid-command.
+  // Is the console sitting at an idle shell prompt, with nothing typed after
+  // it? Used before injecting anything the user did not type.
+  //
+  // "Ends with $ or #" is not enough. That is also what a half-typed command
+  // line looks like the moment someone types a `$` and pauses — `echo $` while
+  // they recall a variable name — and the page would then paste `stty rows …`
+  // into the middle of it and press Enter. Require the LAST line to be
+  // entirely prompt-shaped: no whitespace before the trailing marker, which a
+  // typed command always has.
   function atPrompt(win) {
     const w = win || window;
-    return /(user@bashtion:[^\n]*[$#]|[$#]) ?$/m.test(strip(w.__serial).slice(-200));
+    const s = strip(w.__serial).replace(/\r/g, '');
+    const last = s.slice(s.lastIndexOf('\n') + 1);
+    return /^\S*[$#] $/.test(last);
   }
 
   return { install, strip, atPrompt };

@@ -45,10 +45,19 @@ status('running');
 
 // Terminal geometry. The grid follows the window, and the guest is told what
 // shape it is now in - a serial console carries no window-size signal, so
-// `stty` is the whole mechanism. Resizes are only pushed when the console is
-// sitting at an idle prompt, so the command can never land inside something
-// the user (or a save/restore transfer) is in the middle of.
+// `stty` is the whole mechanism. The push is retried until it lands: it must
+// not go into a half-typed command line, and it must not go into a save or
+// restore (between blocks the console tail looks exactly like an idle prompt,
+// and the next `head -c N` would eat it as archive payload) - but a resize
+// made during either cannot just be dropped, or the two stay divergent for
+// the rest of the session.
 window.__fit = () => TERMFIT.fit(xterm, termEl, window);
+const geomSync = TERMFIT.makeSync({
+  geometry: () => ({ cols: xterm.cols, rows: xterm.rows }),
+  canSend: () => window.__booted && !SERIALFS.isBusy() && SERIALTAP.atPrompt(window),
+  send: (text) => xterm.paste(text),
+});
+window.__geomSync = geomSync;
 // The renderer may not have measured a cell yet on the first attempt; keep
 // trying briefly rather than leave the grid at xterm's 80x24 default, which
 // is the state this fixes.
@@ -59,12 +68,7 @@ window.__fit = () => TERMFIT.fit(xterm, termEl, window);
 let resizeTimer;
 window.addEventListener('resize', () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => {
-    const d = window.__fit();
-    if (d && window.__booted && SERIALTAP.atPrompt(window)) {
-      xterm.paste(TERMFIT.stty(d) + '\n');
-    }
-  }, 400);
+  resizeTimer = setTimeout(() => { window.__fit(); geomSync.request(); }, 400);
 });
 
 // Controls — wired here, never via inline on* attributes, so the strict CSP

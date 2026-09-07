@@ -53,7 +53,11 @@ const BOOTSCREEN = (() => {
     // and a serial console has no way to signal a resize.
     const t = window.__xterm;
     if (t && t.cols && t.rows && typeof TERMFIT === 'object') {
-      cmds.push(TERMFIT.stty({ cols: t.cols, rows: t.rows }));
+      const geom = { cols: t.cols, rows: t.rows };
+      cmds.push(TERMFIT.stty(geom));
+      // tell the resize sync what the guest now believes, so it does not
+      // immediately repeat it - and so a later resize is a real difference
+      if (window.__geomSync) window.__geomSync.seed(geom);
     }
     // The guest's /etc/motd covers the deliberate absence of a network, the
     // spare /dev/vdb, and the fact that work is not saved unless you save it.

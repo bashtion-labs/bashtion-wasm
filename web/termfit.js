@@ -48,7 +48,7 @@ const TERMFIT = (() => {
     return { cols: Math.max(MIN_COLS, cols), rows: Math.max(MIN_ROWS, rows) };
   }
 
-  return {
+  const exports = {
     measure,
     // Resize the grid if the window says it should be a different shape.
     // Returns the new geometry, or null if nothing changed or nothing could
@@ -62,5 +62,38 @@ const TERMFIT = (() => {
     },
     // What the guest has to be told. The only channel is the console.
     stty(d) { return 'stty rows ' + d.rows + ' cols ' + d.cols; },
+
+    // Keep the guest's idea of the terminal in step with the page's, retrying
+    // until it actually lands.
+    //
+    // A resize made while the console is busy cannot simply be dropped. There
+    // is no queue and no second trigger: the DOM `resize` event is the only
+    // one, and `fit()` returns null once the grid already matches the window,
+    // so dragging the window back to a size it has already been does not
+    // re-fire it either. Miss the moment and the grid and the guest stay
+    // divergent for the rest of the session — which is the failure this whole
+    // module exists to prevent, arrived at from the other direction.
+    makeSync({ geometry, canSend, send, delay }) {
+      let told = null;
+      let timer = null;
+      const attempt = () => {
+        timer = null;
+        const want = geometry();
+        if (!want || !want.cols || !want.rows) return;
+        if (told && told.cols === want.cols && told.rows === want.rows) return;
+        if (!canSend()) { timer = setTimeout(attempt, delay || 2000); return; }
+        send(exports.stty(want) + '\n');
+        told = { cols: want.cols, rows: want.rows };
+      };
+      return {
+        request() { if (timer) { clearTimeout(timer); timer = null; } attempt(); },
+        // what the guest was last told, so a handover can seed it
+        seed(g) { told = g && { cols: g.cols, rows: g.rows }; },
+        told: () => told,
+        pending: () => timer !== null,
+      };
+    },
   };
+
+  return exports;
 })();

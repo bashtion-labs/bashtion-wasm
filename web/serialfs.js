@@ -42,7 +42,13 @@ const SERIALFS = (() => {
   // is deliberately no overall deadline: a big archive through a slow emulated
   // uart legitimately takes minutes, and the previous fixed 120 s cap was
   // unreachable for anything past ~10 KB.
+  //
+  // WORK_MS covers the phases where the guest is legitimately silent because
+  // it is busy rather than stuck - walking the filesystem to collect a
+  // session, or unpacking one - which on a 10-30x interpreter is minutes of
+  // no output at all.
   const IDLE_MS = 45000;
+  const WORK_MS = 300000;
 
   let busy = false;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -183,7 +189,7 @@ const SERIALFS = (() => {
       ov.sub('home, /etc, /opt, /srv, /usr/local and the user database');
       const t0 = serialLen();
       paste(
-        'stty -echo; ' +
+        'stty -echo; ' + emit('T-PACK') + '; ' +
         'if ' + PACK + ' > /tmp/bw-save.tgz 2>/tmp/bw-save.err; then ' +
           emit('T-BEGIN', '%s %s',
                '"$(wc -c < /tmp/bw-save.tgz)" "$(cksum < /tmp/bw-save.tgz | cut -d" " -f1)"') + '; ' +
@@ -191,12 +197,18 @@ const SERIALFS = (() => {
         'else ' + emit('T-ERR', '%s', '"$(tail -1 /tmp/bw-save.err | tr -c "[:print:]" " ")"') + '; fi; ' +
         'rm -f /tmp/bw-save.tgz /tmp/bw-save.err; stty echo\n');
 
+      if (!await waitFor(/BWT-PACK/, t0)) {
+        ov.fail('Saving stopped', 'The console never took the command.');
+        return null;
+      }
+      ov.title('Collecting your work…');
       const poll = setInterval(() => {
         const m = serialFrom(t0).match(/BWT-BEGIN\s+\d+\s+\d+\s*([A-Za-z0-9+/=\s]*)/);
         if (m) ov.sub(((m[1].replace(/\s/g, '').length * 0.75 / 1024) | 0) + ' KB packed');
       }, 400);
       const m = await waitFor(
-        /BWT-BEGIN\s+(\d+)\s+(\d+)\s*([A-Za-z0-9+/=\s]*?)\s*BWT-END|BWT-ERR([^\n]*)/, t0);
+        /BWT-BEGIN\s+(\d+)\s+(\d+)\s*([A-Za-z0-9+/=\s]*?)\s*BWT-END|BWT-ERR([^\n]*)/,
+        t0, WORK_MS);
       clearInterval(poll);
 
       if (!m) { ov.fail('Saving stopped', 'The console went quiet — nothing was changed.'); return null; }
@@ -275,7 +287,7 @@ const SERIALFS = (() => {
       paste('base64 -d < /tmp/bw-load.b64 > /tmp/bw-load.tgz 2>/dev/null; ' +
             emit('R-SUM', '%s %s',
                  '"$(wc -c < /tmp/bw-load.tgz)" "$(cksum < /tmp/bw-load.tgz | cut -d" " -f1)"') + '\n');
-      const sum = await waitFor(/BWR-SUM\s+(\d+)\s+(\d+)/, t0);
+      const sum = await waitFor(/BWR-SUM\s+(\d+)\s+(\d+)/, t0, WORK_MS);
       if (!sum) return { ok: false, why: 'The guest never confirmed the transfer.' };
       if (Number(sum[1]) !== bytes.length || Number(sum[2]) !== cksum(bytes)) {
         // Nothing has been unpacked yet, so the session is untouched.
@@ -289,7 +301,7 @@ const SERIALFS = (() => {
               emit('R-OK') + '; else ' +
               emit('R-FAIL', '%s', '"$(tail -1 /tmp/bw-load.err | tr -c "[:print:]" " ")"') + '; fi; ' +
             'rm -f /tmp/bw-load.b64 /tmp/bw-load.tgz /tmp/bw-load.err; stty echo\n');
-      const done = await waitFor(/BWR-OK|BWR-FAIL([^\n]*)/, t0);
+      const done = await waitFor(/BWR-OK|BWR-FAIL([^\n]*)/, t0, WORK_MS);
       if (!done) return { ok: false, why: 'Unpacking never finished.' };
       if (done[0].startsWith('BWR-FAIL')) {
         return { ok: false, why: (done[1] || '').trim() || 'The guest could not unpack the archive.' };

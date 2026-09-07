@@ -134,6 +134,7 @@ export class FakeGuest {
 
     // save
     if (line.includes('bashtion-pack')) {
+      this.write('\r\nBWT-PACK\r\n');
       if (this.opts.packFails) {
         this.write('\r\nBWT-ERR ' + this.opts.packFails + '\r\n');
         return this.prompt();

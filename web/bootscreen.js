@@ -67,13 +67,16 @@ const BOOTSCREEN = (() => {
     if (revealed) return;
     revealed = true;
     window.__booted = true;
+    // Only look at what arrives AFTER the handover is sent: the prompt that
+    // triggered the reveal is still the last thing in the buffer, and matching
+    // that would lift the cover before the guest had run any of this.
+    const from = (window.__serial || '').length;
     try { window.__paste && window.__paste(handover()); } catch (e) {}
-    // Wait for the prompt to come back before lifting the cover, so nobody
-    // watches the motd being drawn a line at a time under emulation.
     const t0 = Date.now();
     const settle = setInterval(() => {
-      const back = /[$#] ?$/m.test(stripANSI(window.__serial || '').slice(-200));
-      if (!back && Date.now() - t0 < 8000) return;
+      const since = stripANSI((window.__serial || '').slice(from));
+      const back = /[$#] ?$/m.test(since.slice(-200)) && since.indexOf('clear') !== -1;
+      if (!back && Date.now() - t0 < 15000) return;
       clearInterval(settle);
       if (!el) return;
       el.style.opacity = '0';

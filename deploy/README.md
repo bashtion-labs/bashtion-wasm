@@ -51,7 +51,7 @@ produces a VM that will not resume. `pack-site.sh` takes the right one.
 | `qemu-system-x86_64.wasm` (the engine) | ~39 MiB | **R2** |
 | the page, JS, `load-kernel.data` (17 MiB), ROM, lab disk, `vendor/` | each < 25 MiB | **Static Assets** |
 
-Sizes drift with the guest image — the rootfs grew from ~874 MiB when man pages
+Sizes drift with the guest image — the rootfs grew from ~1038 MiB when man pages
 and a real free-space target were added. `pack-site.sh` prints the current
 split, and `split.sh` fails rather than deploy anything over the 25 MiB cap, so
 neither number needs to be trusted from this table.
@@ -90,7 +90,7 @@ Yes, comfortably.
 `worker.js` stores each full GET of `qemu-system-x86_64.wasm` and `load-state.data`
 in Cloudflare's edge cache (they are immutable), so a second visitor in the same
 region gets them straight from cache — no Worker invocation, no R2 read. The
-~874 MiB `load-rootfsB.data` is intentionally **not** cached: it is above the
+~1038 MiB `load-rootfsB.data` is intentionally **not** cached: it is above the
 free-plan max cacheable object size, and skipping it avoids streaming a huge body
 through the Worker's 128 MiB memory (it still serves fine from R2, and egress is
 free). Ranged requests bypass the cache and read R2 directly; browsers also cache
@@ -148,9 +148,9 @@ then load it under the same headers) before shipping.
 - A free Cloudflare account, with the **bashtion.dev** zone already added to it
   (the deploy serves on `lab.bashtion.dev`).
 - Node.js (for `npx wrangler`). No global install needed.
-- The built site at `out/gate1/htdocsF/` (from the build/snapshot pipeline, or a
+- The built site at `out/site/` (from the build/snapshot pipeline, or a
   CI artifact download).
-- For the ~874 MiB rootfs upload: [`rclone`](https://rclone.org/downloads/)
+- For the ~1038 MiB rootfs upload: [`rclone`](https://rclone.org/downloads/)
   (`brew install rclone`), because it uploads in multipart chunks. `aws-cli`
   works too.
 
@@ -159,7 +159,7 @@ then load it under the same headers) before shipping.
 ## Step 1 — Assemble the static half
 
 ```sh
-./deploy/split.sh          # defaults to out/gate1/htdocsF
+./deploy/split.sh          # defaults to out/site
 ```
 
 This creates `deploy/public/` (the small files + the hardened page + the header
@@ -183,16 +183,16 @@ The engine and the saved-state file are under wrangler's single-upload cap:
 
 ```sh
 npx wrangler r2 object put bashtion-assets/qemu-system-x86_64.wasm \
-    --file out/gate1/htdocsF/qemu-system-x86_64.wasm --remote
+    --file out/site/qemu-system-x86_64.wasm --remote
 
-npx wrangler r2 object put bashtion-assets/load-state.data \
-    --file out/gate1/htdocsF/load-state.data --remote
+npx wrangler r2 object put bashtion-assets/load-state.v2.data \
+    --file out/site/load-state.v2.data --remote
 ```
 
 ## Step 4 — Upload the rootfs (multipart) with a least-privilege token
 
 `wrangler r2 object put` uses a single request (~300 MiB ceiling); the rootfs is
-~874 MiB, so upload it with rclone using a **scoped, temporary** R2 API token.
+~1038 MiB, so upload it with rclone using a **scoped, temporary** R2 API token.
 
 **4a. Create a bucket-scoped R2 API token (S3 credentials).** In the dashboard,
 go to **Storage & databases → R2 Object Storage** (the R2 Overview page). In the
@@ -235,14 +235,16 @@ rclone config create r2 s3 \
 
 `no_check_bucket=true` is **required** for a bucket-scoped token: it cannot list
 or create buckets, so rclone's default pre-flight bucket check would otherwise
-fail. (Cloudflare's own example omits it and uses the interactive `rclone
-config` wizard — provider `Cloudflare`, region `auto`, that endpoint — which
-yields the same `[r2]` remote.)
+fail. (Cloudflare's own rclone page prescribes the same thing — "If you are using a
+token with Object-level permissions, you will need to add `no_check_bucket =
+true`". Its wizard walkthrough does *not* produce an equivalent remote: it
+emits no `region`, and rclone no longer offers `acl` for provider=Cloudflare,
+nor `no_check_bucket` outside the advanced prompts.)
 
 **4c. Upload (multipart):**
 
 ```sh
-rclone copy out/gate1/htdocsF/load-rootfsB.data r2:bashtion-assets/ \
+rclone copy out/site/load-rootfsB.v2.data r2:bashtion-assets/ \
   --s3-upload-cutoff=100M --s3-chunk-size=100M --progress
 ```
 
@@ -297,11 +299,23 @@ made it into the deploy.
 - **Changed the page/JS only:** re-run `./deploy/split.sh out/site`, then
   `cd deploy && npx wrangler deploy`. No R2 changes needed — the page scripts
   are taken from the tracked `web/` tree, so a rebuild is not required either.
-- **Rebuilt the guest image or snapshot:** re-run `make site` against the new
-  artifacts, then re-upload whichever of the three big files changed (Steps
-  3–4) and redeploy. A guest-image change moves `load-rootfsB.data` and
-  `load-state.data`; the engine `.wasm` only changes when the engine does, so
-  it usually does not need re-uploading. R2 objects are content-addressed by
+- **Rebuilt the guest image or snapshot: bump the version tag.** Do *not*
+  overwrite an existing R2 key. Two caches make an in-place overwrite unsafe:
+  `worker.js` consults the edge cache **before** R2 and stores anything under
+  `CACHE_MAX_BYTES` as `immutable, max-age=1y`, and browsers hold their copies
+  the same way — a purge cannot reach those. And because each loader bakes in
+  the **exact byte length** of its `.data`, a stale object is not an error: the
+  loader slices the wrong range and hands QEMU a truncated disk or memory
+  image, which fails later and mysteriously.
+
+  So: `make site ENGINE=... GUEST=... R2TAG=v3`, change the two keys in
+  `worker.js`'s `R2_FILES` to match, upload the new objects, `wrangler deploy`
+  (the switch is atomic — nothing points at the new keys until the page does),
+  then delete the old objects once traffic has moved. `pack-site.sh` refuses to
+  finish if the page and `worker.js` do not name exactly the bundles it built.
+
+  The engine `.wasm` only changes when the engine does, and the fork build is
+  reproducible, so it usually needs no re-upload at all. R2 objects are content-addressed by
   you here, so overwriting the same key is fine; visitors get the new bytes
   (the immutable cache is keyed on the URL — if you need instant invalidation,
   version the key, e.g. `load-rootfsB.v2.data`, and update `worker.js`).

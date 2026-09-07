@@ -88,11 +88,14 @@ pack:
 ## Assemble a deployable htdocs from the two CI artifacts. Download them with
 ##   gh run download -n qemu-engine -D /tmp/engine
 ##   gh run download -n snapshot-set -D /tmp/guest
-## then: make site ENGINE=/tmp/engine GUEST=/tmp/guest
+## then: make site ENGINE=/tmp/engine GUEST=/tmp/guest R2TAG=v2
+## R2TAG versions the two R2-hosted bundles; bump it whenever their bytes
+## change, or caches will keep serving the old ones (see deploy/README.md).
 site:
 	@[ -n "$(ENGINE)" ] || { echo "usage: make site ENGINE=<qemu-engine dir> GUEST=<snapshot-set dir>"; exit 1; }
 	@[ -n "$(GUEST)" ]  || { echo "usage: make site ENGINE=<qemu-engine dir> GUEST=<snapshot-set dir>"; exit 1; }
-	./scripts/pack-site.sh --engine "$(ENGINE)" --guest "$(GUEST)" --out $(OUT)/site
+	./scripts/pack-site.sh --engine "$(ENGINE)" --guest "$(GUEST)" --out $(OUT)/site \
+	  $(if $(R2TAG),--r2-tag $(R2TAG))
 	./deploy/split.sh $(OUT)/site
 
 ## Serve locally with the COOP/COEP headers cross-origin isolation requires.

@@ -4,7 +4,7 @@
 'use strict';
 
 const BOOTSCREEN = (() => {
-  const TOWER = "        ___    ___    ___\n       |   |  |   |  |   |\n       |   |__|   |__|   |\n       |                 |\n       |   $_            |\n       |   ___________   |\n       |                 |\n       |_________________|\n      /                   \\\n     /_____________________\\\n    |_______________________|";
+  const TOWER = "    ___    ___    ___\n   |   |  |   |  |   |\n   |   |__|   |__|   |\n   |                 |\n   |   $_            |\n   |   ___________   |\n   |                 |\n   |_________________|\n  /                   \\\n /_____________________\\\n|_______________________|";
   const stripANSI = (x) => x
     .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '')
     .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
@@ -25,7 +25,7 @@ const BOOTSCREEN = (() => {
     const rest = document.createElement('div');
     rest.style.textAlign = 'center';
     rest.innerHTML =
-      '<div style="margin-top:18px;font-size:22px;letter-spacing:6px">bashtion</div>' +
+      '<div style="margin-top:18px;font-size:22px;letter-spacing:6px;margin-right:-6px">bashtion</div>' +
       '<div style="margin-top:6px;font-size:13px;color:#8a8a8a">a real Linux box, in your browser</div>' +
       '<div style="margin-top:26px;font-size:13px;color:#9a9a9a">starting your environment<span id="bwBootDots"></span></div>' +
       '<div style="margin-top:6px;font-size:12px;color:#666">first start can take a minute or two</div>';

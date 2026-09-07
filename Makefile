@@ -12,7 +12,7 @@ HTDOCS        := $(OUT)/htdocs
 TOOLCHAIN_DOCKERFILE := $(QEMU_SRC)/tests/docker/dockerfiles/emsdk-wasm64-cross.docker
 EMSDK_VERSION ?=
 
-.PHONY: all toolchain qemu image snapshot serve deploy-prep clean builder-up builder-down
+.PHONY: all toolchain qemu image snapshot site serve deploy-prep clean builder-up builder-down
 
 all: qemu image
 
@@ -84,6 +84,16 @@ pack:
 	   $(HTDOCS)/assets/
 	cp $(OUT)/image/vmlinuz $(OUT)/image/rootfs.ext4 $(OUT)/image/vdb.qcow2 $(HTDOCS)/assets/
 	cp web/index.html web/module.js $(HTDOCS)/
+
+## Assemble a deployable htdocs from the two CI artifacts. Download them with
+##   gh run download -n qemu-engine -D /tmp/engine
+##   gh run download -n snapshot-set -D /tmp/guest
+## then: make site ENGINE=/tmp/engine GUEST=/tmp/guest
+site:
+	@[ -n "$(ENGINE)" ] || { echo "usage: make site ENGINE=<qemu-engine dir> GUEST=<snapshot-set dir>"; exit 1; }
+	@[ -n "$(GUEST)" ]  || { echo "usage: make site ENGINE=<qemu-engine dir> GUEST=<snapshot-set dir>"; exit 1; }
+	./scripts/pack-site.sh --engine "$(ENGINE)" --guest "$(GUEST)" --out $(OUT)/site
+	./deploy/split.sh $(OUT)/site
 
 ## Serve locally with the COOP/COEP headers cross-origin isolation requires.
 serve:

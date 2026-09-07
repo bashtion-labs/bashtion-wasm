@@ -64,6 +64,30 @@ def skip(path):
     return path in SKIP_EXACT or path.startswith(SKIP_PREFIX)
 
 
+def contained(path, roots):
+    """Is `path` genuinely inside one of `roots`?
+
+    A prefix test is not enough. `/etc/../usr/bin/sudo` starts with `/etc/`,
+    and the kernel resolves the `..` when the path is used - so a string-only
+    guard hands out the whole filesystem. Two conditions:
+
+      * the path must already be canonical and absolute, so anything carrying
+        `..`, `.`, `//` or a trailing slash is rejected outright rather than
+        normalised into something that passes;
+      * its PARENT must really resolve inside a root, so a symlinked directory
+        component cannot redirect the operation somewhere else.
+
+    pack only ever emits canonical absolute paths, so nothing legitimate is
+    turned away.
+    """
+    if not path or not os.path.isabs(path) or os.path.normpath(path) != path:
+        return False
+    if not any(path == r or path.startswith(r + '/') for r in roots):
+        return False
+    parent = os.path.realpath(os.path.dirname(path))
+    return any(parent == r or parent.startswith(r + '/') for r in roots)
+
+
 def walk(root):
     """Every directory, regular file and symlink under root, root included."""
     if not os.path.lexists(root):
@@ -192,11 +216,15 @@ def cmd_pack():
     tar = subprocess.Popen(
         ['tar', 'czf', '-', '--numeric-owner', '--acls',
          '--xattrs', '--xattrs-include=*', '--no-recursion',
+         '--ignore-failed-read',
          '-C', '/', '--null', '-T', '-'],
         stdin=subprocess.PIPE)
     tar.communicate(listing.encode())
-    # 1 is "some files differed while being read", which for a live home
-    # directory is normal and not a reason to refuse to save.
+    # 1 is "some files differed while being read" - normal for a live home
+    # directory. --ignore-failed-read covers the other half of the same race:
+    # the walk can take minutes on a 10-30x interpreter, and a file that is
+    # gone by the time tar stats it is otherwise a fatal exit 2, which the page
+    # reports as a failed save even though the archive is complete.
     sys.exit(0 if tar.returncode in (0, 1) else tar.returncode or 2)
 
 
@@ -208,6 +236,7 @@ def cmd_unpack():
     listed = subprocess.run(['tar', 'tzf', '-'], input=data, capture_output=True)
     if listed.returncode != 0:
         sys.exit('bashtion-unpack: not a readable archive')
+    members = set()
     for name in listed.stdout.decode('utf-8', 'replace').splitlines():
         n = name.lstrip('./')
         if not n:
@@ -216,6 +245,7 @@ def cmd_unpack():
             sys.exit('bashtion-unpack: refusing path %r' % name)
         if not (n + '/').startswith(ALLOWED):
             sys.exit('bashtion-unpack: refusing path outside the session: %r' % name)
+        members.add(n.rstrip('/'))
 
     out = subprocess.run(
         ['tar', 'xzf', '-', '-C', '/', '--numeric-owner', '--same-owner',
@@ -227,14 +257,31 @@ def cmd_unpack():
 
     # A file the user deleted stays deleted: without this a restore is a
     # union of every session that ever ran, and removals never take.
+    #
+    # This list is ARCHIVE-SUPPLIED - session.json is a member like any other -
+    # so it gets the same containment treatment as the member names, and only
+    # when this archive actually carried one. Reading whatever session.json
+    # happens to be on disk would replay the previous save's deletions over
+    # files the current archive just restored.
+    if SESSION.lstrip('/') not in members:
+        print('bashtion-unpack: restored; no deletion list in this archive',
+              file=sys.stderr)
+        return
     try:
         with open(SESSION) as f:
             meta = json.load(f)
     except (OSError, ValueError):
         return
-    removed = 0
-    for p in meta.get('deleted', []):
-        if skip(p) or not any(p.startswith(r + '/') for r in SYSTEM_ROOTS):
+    deleted = meta.get('deleted', [])
+    if not isinstance(deleted, list):
+        return
+    removed = refused = 0
+    # Deepest first: sorted() puts /opt/pkg before /opt/pkg/a, so replaying in
+    # that order hits rmdir on a directory whose children are still there,
+    # fails with ENOTEMPTY and leaves the skeleton behind.
+    for p in sorted((x for x in deleted if isinstance(x, str)), reverse=True):
+        if skip(p) or not contained(p, SYSTEM_ROOTS):
+            refused += 1
             continue
         try:
             if os.path.islink(p) or os.path.isfile(p):
@@ -243,7 +290,9 @@ def cmd_unpack():
                 os.rmdir(p); removed += 1
         except OSError:
             pass
-    print('bashtion-unpack: restored; %d deletions applied' % removed, file=sys.stderr)
+    note = '; %d refused as out of bounds' % refused if refused else ''
+    print('bashtion-unpack: restored; %d deletions applied%s' % (removed, note),
+          file=sys.stderr)
 
 
 def main():

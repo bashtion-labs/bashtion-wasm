@@ -24,6 +24,12 @@ jobs:
           node-version: '22'
       - run: node --test web/test/*.test.mjs
 
+      # The guest save/restore helpers, round-tripped in a throwaway container:
+      # real tar, real ACLs, real users, and the archive-supplied deletion list
+      # that has to be refused when it points outside the session.
+      - name: Guest state round trip
+        run: ./image/test/state-roundtrip.sh
+
   qemu-engine:
     runs-on: ubuntu-latest
     steps:

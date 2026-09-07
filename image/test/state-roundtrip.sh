@@ -31,7 +31,7 @@ ck() { if eval "$2" >/dev/null 2>&1; then echo "ok   $1"; else echo "FAIL $1"; f
 # match the guest: uid 1000 is `user`
 userdel -r ubuntu >/dev/null 2>&1 || true
 id user >/dev/null 2>&1 || useradd -m -u 1000 user
-mkdir -p /home/user/persist /opt /srv /root /var/spool/cron/crontabs
+mkdir -p /home/user/share /opt /srv /root /var/spool/cron/crontabs
 printf 'baseline\n' > /etc/bashtion-will-be-deleted
 printf 'original\n' > /etc/bashtion-config
 
@@ -40,7 +40,7 @@ bashtion-baseline
 
 echo "==> make a session's worth of change"
 echo canary-home   > /home/user/marker.txt
-echo canary-persist > /home/user/persist/marker.txt
+echo canary-share > /home/user/share/marker.txt
 chown -R user:user /home/user
 mkdir -p /opt/example/dir
 groupadd exgroup
@@ -56,7 +56,7 @@ bashtion-pack > /tmp/session.tgz
 ls -l /tmp/session.tgz
 
 echo "==> undo everything (as a reloaded page would)"
-rm -rf /home/user/marker.txt /home/user/persist/marker.txt /opt/example
+rm -rf /home/user/marker.txt /home/user/share/marker.txt /opt/example
 userdel -r exuser 2>/dev/null || true
 groupdel exgroup 2>/dev/null || true
 rm -f /var/spool/cron/crontabs/user
@@ -69,7 +69,7 @@ bashtion-unpack < /tmp/session.tgz
 
 echo "==> check"
 ck "#50 home file restored"            "grep -qx canary-home /home/user/marker.txt"
-ck "#51 ~/persist file restored"       "grep -qx canary-persist /home/user/persist/marker.txt"
+ck "#51 ~/share file restored"       "grep -qx canary-share /home/user/share/marker.txt"
 ck "#50 /opt tree restored"            "test -d /opt/example/dir"
 ck "#50 new user restored"             "id exuser"
 ck "#50 new group restored"            "getent group exgroup"
@@ -91,5 +91,49 @@ mkdir -p /tmp/evil/usr/bin && echo pwn > /tmp/evil/usr/bin/evil
 tar czf /tmp/evil.tgz -C /tmp/evil usr
 if bashtion-unpack < /tmp/evil.tgz 2>/dev/null; then echo "FAIL traversal refused"; fail=1; else echo "ok   traversal refused"; fi
 ck "nothing was written outside the session" "! test -e /usr/bin/evil"
+
+# --- the deletion list is archive-supplied, and was the real hole -----------
+# The member-name check above never saw it: session.json is a legitimate member
+# by design, and the paths inside it were matched with a bare startswith, so
+# "/etc/../usr/bin/sudo" passed the guard and the kernel resolved the "..".
+echo "==> an archive whose deletion list points outside the session is refused"
+mkdir -p /tmp/eviltree/home/user /tmp/eviltree/var/lib/bashtion
+echo harmless > /tmp/eviltree/home/user/harmless
+cat > /tmp/eviltree/var/lib/bashtion/session.json <<'JSON'
+{"format":1,"created":0,"deleted":[
+  "/etc/../usr/bin/bashtion-sentinel",
+  "/etc/../usr/local/lib/bashtion/state.py",
+  "/etc/../../home/user/keep-me.txt",
+  "/etc/../etc/machine-id",
+  "/srv/../etc/passwd"]}
+JSON
+printf '#!/bin/sh\n' > /usr/bin/bashtion-sentinel && chmod 755 /usr/bin/bashtion-sentinel
+echo keep-me > /home/user/keep-me.txt
+printf 'id\n' > /etc/machine-id
+( cd /tmp/eviltree && printf '%s\0' home/user/harmless var/lib/bashtion/session.json     | tar czf /tmp/evil-del.tgz --no-recursion --null -T - )
+bashtion-unpack < /tmp/evil-del.tgz 2>&1 | sed 's/^/     /'
+ck "a binary outside the roots survives"          "test -x /usr/bin/bashtion-sentinel"
+ck "the tool itself survives"                     "test -f /usr/local/lib/bashtion/state.py"
+ck "a home file survives"                         "grep -qx keep-me /home/user/keep-me.txt"
+ck "a SKIP_EXACT path survives"                   "test -s /etc/machine-id"
+ck "/etc/passwd survives"                         "test -s /etc/passwd"
+
+echo "==> a deleted directory is fully removed, not left as a skeleton"
+mkdir -p /opt/pkg/sub && echo a > /opt/pkg/a && echo b > /opt/pkg/sub/b
+bashtion-baseline
+rm -rf /opt/pkg
+bashtion-pack > /tmp/deldir.tgz
+mkdir -p /opt/pkg/sub && echo a > /opt/pkg/a && echo b > /opt/pkg/sub/b
+bashtion-unpack < /tmp/deldir.tgz 2>&1 | sed 's/^/     /'
+ck "the directory is gone, not an empty skeleton" "! test -e /opt/pkg"
+
+echo "==> an archive with no deletion list does not replay a stale one"
+printf 'restored\n' > /etc/bashtion-stale
+mkdir -p /tmp/plain/etc && printf 'restored\n' > /tmp/plain/etc/bashtion-stale
+# /var/lib/bashtion/session.json is still on disk from the previous unpack
+( cd /tmp/plain && printf '%s\0' etc/bashtion-stale     | tar czf /tmp/plain.tgz --no-recursion --null -T - )
+rm -f /etc/bashtion-stale
+bashtion-unpack < /tmp/plain.tgz 2>&1 | sed 's/^/     /'
+ck "the archive's own file survives an unrelated stale list" "test -s /etc/bashtion-stale"
 
 exit $fail

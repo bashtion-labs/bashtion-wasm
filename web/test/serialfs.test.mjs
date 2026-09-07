@@ -66,13 +66,28 @@ test('#48 the payload is never echoed back, and never reaches readline', async (
   await p.SERIALFS.load();
 
   const b64 = Buffer.from(bin).toString('base64');
-  const probe = b64.slice(1000, 1200);
+  // Inside a single 512-char payload line. A window spanning a line boundary
+  // (e.g. 1000..1200, which straddles 1024) can never match an echo, because
+  // any echo reproduces it with the separator in the middle — so the
+  // assertion held whether the payload was echoed or not.
+  const probe = b64.slice(1030, 1200);
   assert.ok(!p.guest.payloadSeen().includes(probe),
             'base64 payload was echoed back over the console');
   // every payload byte went to a command reading the tty, not to a shell line
   for (const cmd of p.guest.commands) {
     assert.ok(!cmd.includes(probe), 'payload appeared on a command line: ' + cmd.slice(0, 80));
   }
+});
+
+test('#48 the echo probe would actually catch an echoing payload', async () => {
+  const bin = archive(6000, 5);
+  // a guest that echoes what a tty-reading command consumes, i.e. ECHO left on
+  const p = sfs({ echoPayload: true });
+  p.storage.files.set('bashtion-work.tgz', bin);
+  await p.SERIALFS.load();
+  const b64 = Buffer.from(bin).toString('base64');
+  assert.ok(p.guest.payloadSeen().includes(b64.slice(1030, 1200)),
+            'the probe must detect a payload that IS echoed, or it proves nothing');
 });
 
 test('#48 blocks stay inside the tty line-discipline buffer', async () => {
@@ -135,6 +150,69 @@ test('#47 markers are never matched against their own command echo', async () =>
                 'command line contains a bare marker (' + tag + '): ' + cmd.slice(0, 120));
     }
   }
+});
+
+test('#47/#61 a stalled block is recovered: the reader is freed and echo restored', async () => {
+  const p = sfs({ stallAtBlock: 2 });
+  p.win.__bwTimeouts = { idle: 300, work: 300, hard: 1500, hardWork: 1500 };
+  p.storage.files.set('bashtion-work.tgz', archive(9000, 31));
+  const ok = await p.SERIALFS.load();
+  assert.equal(ok, false, 'a stalled transfer must report failure');
+  assert.ok(p.guest.interrupts > 0,
+            'the blocked reader was never interrupted, so recovery was eaten as payload');
+  // `stty echo` must arrive as its own command line, not buried behind a Ctrl-C
+  // that never happened and not as part of the happy-path unpack line.
+  const recovery = p.guest.commands.filter(
+    (c) => /^stty echo; rm -f /.test(c));
+  assert.ok(recovery.length > 0,
+            'no standalone recovery command ran; saw: ' +
+            JSON.stringify(p.guest.commands.slice(-3)));
+  assert.equal(p.guest.restored, null, 'nothing may be unpacked after a stall');
+});
+
+test('#47 a wedged transfer next to a chatty guest still gives up', async () => {
+  const p = sfs({ stallAtBlock: 2 });
+  p.win.__bwTimeouts = { idle: 400, work: 400, hard: 2000, hardWork: 2000 };
+  p.storage.files.set('bashtion-work.tgz', archive(9000, 37));
+  // background output refreshes the idle timer forever; only the absolute
+  // deadline can end this
+  const stop = p.guest.startChatter(40);
+  // Without an absolute deadline this never settles at all, so race it: a hung
+  // promise must surface as a failed assertion, not as a timed-out CI job.
+  const ok = await Promise.race([
+    p.SERIALFS.load(),
+    new Promise((_, rej) => setTimeout(
+      () => rej(new Error('load() never settled — background chatter kept the '
+                        + 'idle timer alive and nothing bounded the wait')), 15000)),
+  ]).catch((e) => { stop(); throw e; });
+  stop();
+  assert.equal(ok, false);
+  assert.equal(findOverlay(p, 'bwOvBar').style.background, '#e0663c');
+});
+
+test('#49 a second load while one is running leaves the overlay alone', async () => {
+  const p = sfs({});
+  p.storage.files.set('bashtion-work.tgz', archive(6000, 41));
+  const first = p.SERIALFS.load();
+  const second = await p.SERIALFS.load();     // lands while the first is mid-flight
+  assert.equal(second, false);
+  // ov.fail would repaint the shared overlay red and arm a 6 s hide, exposing
+  // the raw transfer of the run that is still going.
+  assert.notEqual(findOverlay(p, 'bwOvBar').style.background, '#e0663c');
+  assert.equal(await first, true);
+});
+
+test('nothing is typed at the guest when there is no shell prompt', async () => {
+  const p = sfs({});
+  p.storage.files.set('bashtion-work.tgz', archive(2000, 43));
+  p.win.__bwTimeouts = { idle: 200, work: 200, hard: 800, hardWork: 800 };
+  // a guest that never shows a prompt: ensureShell must fail and we must not
+  // inject shell text into whatever owns the tty (vim, less, a heredoc)
+  p.guest.prompt = () => {};
+  const before = p.guest.commands.length;
+  assert.equal(await p.SERIALFS.load(), false);
+  const typed = p.guest.commands.slice(before).filter((c) => c.trim().length > 0);
+  assert.deepEqual(typed, [], 'pasted into a guest with no prompt: ' + JSON.stringify(typed));
 });
 
 test('the terminal is handed back with echo on, however a transfer ends', async () => {

@@ -49,6 +49,24 @@ const SERIALFS = (() => {
   // no output at all.
   const IDLE_MS = 45000;
   const WORK_MS = 300000;
+  // ...and an absolute cap on top of it. The idle timer resets on ANY growth
+  // in the console mirror, which is everything the guest writes to ttyS0 - so
+  // a single `dmesg -w &` or `while :; do date; sleep 5; done &` in the
+  // background refreshes it forever and a wedged transfer never gives up:
+  // the promise never settles, `busy` stays latched, and the full-screen
+  // overlay sits there with no error. That is the #47 symptom, reintroduced
+  // by the cure for it. Generous enough that a legitimately slow transfer is
+  // never killed, finite so a stuck one always reports.
+  const HARD_MS = 15 * 60 * 1000;
+  const HARD_WORK_MS = 45 * 60 * 1000;
+
+  // Test seam. The page never sets this; the timeout paths are otherwise only
+  // reachable by waiting minutes for them, which means they go untested and
+  // the bugs in them ship - which is exactly what happened.
+  const ms = (name, dflt) => {
+    const o = (typeof window !== 'undefined' && window.__bwTimeouts) || {};
+    return typeof o[name] === 'number' ? o[name] : dflt;
+  };
 
   let busy = false;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -68,15 +86,20 @@ const SERIALFS = (() => {
   // Wait for `re`, giving up only when the guest has gone completely silent.
   // Every byte that arrives - progress output, an echo, anything - resets the
   // clock, so a transfer that is still moving is never abandoned.
-  const waitFor = (re, from, idleMs) => new Promise((resolve) => {
+  const waitFor = (re, from, idleMs, hardMs) => new Promise((resolve) => {
+    const started = Date.now();
+    const idle = idleMs || ms('idle', IDLE_MS);
+    const hard = hardMs ||
+      (idle >= ms('work', WORK_MS) ? ms('hardWork', HARD_WORK_MS) : ms('hard', HARD_MS));
     let seen = serialLen();
-    let moved = Date.now();
+    let moved = started;
     const tick = () => {
       const m = serialFrom(from).match(re);
       if (m) return resolve(m);
       const now = serialLen();
       if (now !== seen) { seen = now; moved = Date.now(); }
-      if (Date.now() - moved > (idleMs || IDLE_MS)) return resolve(null);
+      if (Date.now() - moved > idle) return resolve(null);
+      if (Date.now() - started > hard) return resolve(null);
       setTimeout(tick, 200);
     };
     tick();
@@ -169,6 +192,26 @@ const SERIALFS = (() => {
     await sleep(200);
   }
 
+  // Hand the terminal back the way it was found.
+  //
+  // On a FAILED transfer the guest is very often still inside `head -c N`,
+  // which reads the tty directly: anything pasted then is consumed as archive
+  // payload, not run as a command. So the reader has to be killed first -
+  // Ctrl-C, which the line discipline turns into SIGINT for the foreground
+  // job - before `stty echo` can mean anything. Without that the console is
+  // left with ECHO off and an orphaned reader eating the user's keystrokes,
+  // which is worse than the failure it is recovering from.
+  async function recover(clean, tmpfiles) {
+    if (!clean) {
+      paste('\x03');
+      await sleep(300);
+      paste('\x03');
+      await waitFor(/[$#] ?$/m, serialLen(), 5000);
+    }
+    paste('stty echo; rm -f ' + tmpfiles + ' 2>/dev/null\n');
+    await tidy();
+  }
+
   async function ensureShell() {
     const t0 = serialLen();
     paste('\x15\n');                   // Ctrl-U clears any partial line, then Enter
@@ -179,12 +222,20 @@ const SERIALFS = (() => {
   async function exportWork() {
     if (busy) return null;
     busy = true;
+    // Whether we ever actually took the console. The recovery in the finally
+    // types shell text; running it after ensureShell() has just reported that
+    // there is NO prompt injects ~70 characters into whatever program owns the
+    // tty - vim, less, a heredoc - while the overlay tells the user to wait
+    // for a prompt.
+    let engaged = false;
+    let clean = false;
     try {
       ov.show('Preparing…');
       if (!await ensureShell()) {
         ov.fail('Click the terminal, wait for the $ prompt, then try again');
         return null;
       }
+      engaged = true;
       ov.title('Saving your work…');
       ov.sub('home, /etc, /opt, /srv, /usr/local and the user database');
       const t0 = serialLen();
@@ -208,7 +259,7 @@ const SERIALFS = (() => {
       }, 400);
       const m = await waitFor(
         /BWT-BEGIN\s+(\d+)\s+(\d+)\s*([A-Za-z0-9+/=\s]*?)\s*BWT-END|BWT-ERR([^\n]*)/,
-        t0, WORK_MS);
+        t0, ms('work', WORK_MS));
       clearInterval(poll);
 
       if (!m) { ov.fail('Saving stopped', 'The console went quiet — nothing was changed.'); return null; }
@@ -228,25 +279,31 @@ const SERIALFS = (() => {
                 'Checksum did not match (' + bin.length + ' of ' + m[1] + ' bytes). Try again.');
         return null;
       }
+      clean = true;
       return bin;
     } finally {
-      // Whatever happened, hand the terminal back the way it was found: a
-      // transfer that dies between `stty -echo` and `stty echo` otherwise
-      // leaves the user typing into a console that shows nothing.
-      paste('stty echo; rm -f /tmp/bw-save.tgz /tmp/bw-save.err 2>/dev/null\n');
-      try { await tidy(); } finally { busy = false; }
+      try {
+        if (engaged) await recover(clean, '/tmp/bw-save.tgz /tmp/bw-save.err');
+      } finally { busy = false; }
     }
   }
 
   // ---- restore -----------------------------------------------------------
   async function importWork(bytes) {
-    if (busy) return { ok: false, why: 'A transfer is already running.' };
+    // A second click while a transfer is running must not touch the shared
+    // overlay: ov.fail() would repaint it red and arm a 6 s hide, exposing the
+    // raw base64 traffic of the transfer that is still running, with nothing
+    // to bring the cover back.
+    if (busy) return { ok: false, busy: true };
     busy = true;
+    let engaged = false;
+    let clean = false;
     try {
       ov.show('Preparing…');
       if (!await ensureShell()) {
         return { ok: false, title: 'Click the terminal, wait for the $ prompt, then try again' };
       }
+      engaged = true;
       ov.title('Restoring your work…');
       const b64 = b64encode(bytes);
 
@@ -287,10 +344,12 @@ const SERIALFS = (() => {
       paste('base64 -d < /tmp/bw-load.b64 > /tmp/bw-load.tgz 2>/dev/null; ' +
             emit('R-SUM', '%s %s',
                  '"$(wc -c < /tmp/bw-load.tgz)" "$(cksum < /tmp/bw-load.tgz | cut -d" " -f1)"') + '\n');
-      const sum = await waitFor(/BWR-SUM\s+(\d+)\s+(\d+)/, t0, WORK_MS);
+      const sum = await waitFor(/BWR-SUM\s+(\d+)\s+(\d+)/, t0, ms('work', WORK_MS));
       if (!sum) return { ok: false, why: 'The guest never confirmed the transfer.' };
       if (Number(sum[1]) !== bytes.length || Number(sum[2]) !== cksum(bytes)) {
-        // Nothing has been unpacked yet, so the session is untouched.
+        // Nothing has been unpacked yet, so the session is untouched. The
+        // guest is back at a prompt here, so no reader needs freeing.
+        clean = true;
         return { ok: false, why: 'The archive arrived damaged (' + sum[1] + ' of ' +
                                  bytes.length + ' bytes). Nothing was changed — try again.' };
       }
@@ -301,15 +360,19 @@ const SERIALFS = (() => {
               emit('R-OK') + '; else ' +
               emit('R-FAIL', '%s', '"$(tail -1 /tmp/bw-load.err | tr -c "[:print:]" " ")"') + '; fi; ' +
             'rm -f /tmp/bw-load.b64 /tmp/bw-load.tgz /tmp/bw-load.err; stty echo\n');
-      const done = await waitFor(/BWR-OK|BWR-FAIL([^\n]*)/, t0, WORK_MS);
+      const done = await waitFor(/BWR-OK|BWR-FAIL([^\n]*)/, t0, ms('work', WORK_MS));
       if (!done) return { ok: false, why: 'Unpacking never finished.' };
       if (done[0].startsWith('BWR-FAIL')) {
         return { ok: false, why: (done[1] || '').trim() || 'The guest could not unpack the archive.' };
       }
+      clean = true;
       return { ok: true };
     } finally {
-      paste('stty echo; rm -f /tmp/bw-load.b64 /tmp/bw-load.tgz /tmp/bw-load.err 2>/dev/null\n');
-      try { await tidy(); } finally { busy = false; }
+      try {
+        if (engaged) {
+          await recover(clean, '/tmp/bw-load.b64 /tmp/bw-load.tgz /tmp/bw-load.err');
+        }
+      } finally { busy = false; }
     }
   }
 
@@ -351,10 +414,14 @@ const SERIALFS = (() => {
       }
       const r = await importWork(bin);
       if (r.ok) { ov.done('✓ Your work was restored'); return true; }
-      ov.fail(r.title || 'Could not restore your work', r.why);
+      if (!r.busy) ov.fail(r.title || 'Could not restore your work', r.why);
       return false;
     },
     hasSaved: () => opfsRead().then((b) => !!(b && b.length)),
+    // The page must not paste anything of its own while a transfer owns the
+    // console: between blocks the tail looks exactly like an idle prompt, and
+    // the next `head -c N` would swallow the injected text as payload.
+    isBusy: () => busy,
     // exposed for tests
     _cksum: cksum,
   };

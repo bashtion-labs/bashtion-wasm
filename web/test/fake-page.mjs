@@ -94,9 +94,28 @@ export class FakeGuest {
 
   write(s) { this.out.push(s); if (this.sink) this.sink(); }
 
+  // Simulate `dmesg -w &` or a cron job: unrelated output that keeps the
+  // console mirror growing while the transfer itself is wedged.
+  startChatter(everyMs = 40) {
+    this.chatter = setInterval(() => this.write('[  12.345678] chatter\r\n'), everyMs);
+    return () => clearInterval(this.chatter);
+  }
+
   feed(text) {
     this.pending += text;
     for (;;) {
+      // ISIG: Ctrl-C interrupts the foreground job wherever it lands. This is
+      // the whole mechanism the failure-recovery path depends on - without it
+      // a blocked `head -c N` eats the recovery as payload.
+      const intr = this.pending.indexOf('\x03');
+      if (intr >= 0) {
+        this.pending = this.pending.slice(intr + 1);
+        this.interrupts = (this.interrupts || 0) + 1;
+        this.reader = null;
+        this.write('^C\r\n');
+        this.prompt();
+        continue;
+      }
       if (this.reader) {
         const want = this.reader.need - this.reader.got.length;
         if (!want) { this.finishRead(); continue; }
@@ -105,6 +124,10 @@ export class FakeGuest {
         this.pending = this.pending.slice(take.length);
         // icrnl: the tty turns the CRs xterm produced back into newlines
         this.reader.got += take.replace(/\r/g, '\n');
+        // ECHO left on: the tty reflects everything the reader consumes. The
+        // protocol's job is to make sure this never happens; the tests need to
+        // be able to simulate it, or they cannot prove it does not.
+        if (this.opts.echoPayload) this.write(take.replace(/\r/g, '\r\n'));
         if (this.reader.got.length >= this.reader.need) this.finishRead();
         continue;
       }
@@ -163,6 +186,9 @@ export class FakeGuest {
         done: (data) => {
           this.blocks++;
           this.b64 += this.opts.mangleBlock ? this.opts.mangleBlock(data, this.blocks) : data;
+          // A guest that never acknowledges: the reader stays blocked, exactly
+          // as it would if the block came up short.
+          if (this.opts.stallAtBlock === this.blocks) { this.stalled = true; return; }
           this.write('\r\nBWR-BLK\r\n');
           this.prompt();
         },

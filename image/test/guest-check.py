@@ -261,6 +261,17 @@ def run_checks(con):
     capture(con, 'sudo ufw --force disable 2>&1 | tail -1', 180)
 
     # ---- #50/#51 the session survives a save/restore round trip -----------
+    # First, a session that has changed nothing must pack to almost nothing.
+    # This is the check that catches a baseline which does not match the image
+    # it shipped as: when it drifts, every save silently carries the difference
+    # across a serial console at a few hundred bytes a second.
+    rc, out = capture(con, 'sudo /usr/local/sbin/bashtion-pack 2>/tmp/clean.err | wc -c', 600)
+    clean = int(out.strip()) if out.strip().isdigit() else -1
+    rc, err = capture(con, 'cat /tmp/clean.err')
+    print('     clean pack: %s' % err.replace('\n', ' | ')[:600], flush=True)
+    check('#50 an untouched session packs small (%s bytes)' % clean,
+          0 < clean < 65536, out)
+
     capture(con, 'echo canary-home > ~/marker.txt; echo canary-share > ~/share/marker.txt')
     capture(con, 'sudo mkdir -p /opt/example/dir && sudo groupadd exgroup && '
                  'sudo useradd -m exuser && sudo setfacl -m u:exuser:rwx /opt/example/dir', 300)

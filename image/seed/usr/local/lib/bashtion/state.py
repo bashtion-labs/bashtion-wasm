@@ -85,8 +85,20 @@ def walk(root):
 
 
 def stamp(path):
+    """What "unchanged since the image shipped" means, per path.
+
+    Whole seconds, deliberately. The baseline is recorded against the builder's
+    filesystem and compared against the same tree after `mke2fs -d` has copied
+    it into an ext4 image, and that copy keeps mtimes only to the second. Every
+    file a build command wrote - the .debs curl fetched into /srv/apt, the
+    lvm.conf a sed edited, the inputrc a printf appended to - carries sub-second
+    nanoseconds, while everything dpkg unpacked carries whole seconds from the
+    tar. Comparing nanoseconds therefore marked exactly the build-touched files
+    as changed, and put 300 KiB of already-compressed .debs into every single
+    save.
+    """
     st = os.lstat(path)
-    return '%d\t%d' % (st.st_size, st.st_mode & 0o7777)
+    return '%d\t%d\t%d' % (st.st_size, st.st_mode & 0o7777, int(st.st_mtime))
 
 
 def cmd_baseline():
@@ -99,7 +111,7 @@ def cmd_baseline():
                 if skip(p):
                     continue
                 try:
-                    f.write('%s\t%s\t%d\n' % (p, stamp(p), os.lstat(p).st_mtime_ns))
+                    f.write('%s\t%s\n' % (p, stamp(p)))
                 except OSError:
                     continue
                 n += 1
@@ -129,8 +141,7 @@ def changed_system_paths(base):
                 continue
             seen.add(p)
             try:
-                st = os.lstat(p)
-                now = (str(st.st_size), str(st.st_mode & 0o7777), str(st.st_mtime_ns))
+                now = tuple(stamp(p).split('\t'))
             except OSError:
                 continue
             if base.get(p) != now:

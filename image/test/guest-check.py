@@ -434,7 +434,10 @@ def run_checks(con):
           was > 0 and avail >= was - 1, out)
     rc, out = capture(con, 'sudo /usr/local/sbin/bashtion-unpack < /tmp/full.tgz 2>&1; '
                            'echo "unpack=$?"; rm -f /tmp/full.tgz /tmp/full.err', 600)
-    check('#70 the archive saved on a full disk restores', 'unpack=0' in out.split(), out)
+    # Exit 0 alone no longer says it: a restore of home only exits 0 too (#72).
+    # Saved on this very build, with its id staged in /tmp, it comes back whole.
+    check('#70 the archive saved on a full disk restores, in full',
+          'unpack=0' in out.split() and 'bashtion-unpack: restored; ' in out, out)
 
 
 if __name__ == '__main__':

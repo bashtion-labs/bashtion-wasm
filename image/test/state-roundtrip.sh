@@ -415,15 +415,25 @@ ck "#72 format-1 unpacker: session.json not written"  "grep -q untouched /var/li
 # anything pack writes outside /tmp fails here. (image/test/guest-check.py
 # does the literal version: it fills the guest's / to 100% and saves.)
 #
-#   pack_in_ns SIZE room|full   stdout/stderr are pack's; fd 3 gets whatever
-#                               pack left behind in its /tmp; exit 99 means
-#                               the namespace itself could not be set up
+#   pack_in_ns SIZE room|full [nomarker]
+#                               stdout/stderr are pack's; fd 3 gets whatever
+#                               pack left behind in its /tmp (and, with
+#                               nomarker, in the marker's directory); exit 99
+#                               means the namespace itself could not be set up.
+#                               nomarker: #72's format-2 marker is gone and its
+#                               directory is a full tmpfs, so pack can create
+#                               the file but not fill it, as on a full ext4
 pack_in_ns() {
   unshare --mount sh -c '
     mount -o remount,bind,ro / && mount -t tmpfs -o size="$1" tmpfs /tmp || exit 99
     if [ "$2" = full ]; then head -c 1048576 /dev/zero > /tmp/fill 2>/dev/null; fi
+    if [ "$3" = nomarker ]; then
+      mount -t tmpfs -o size=4k tmpfs /usr/lib/bashtion || exit 99
+      head -c 1048576 /dev/zero > /usr/lib/bashtion/fill 2>/dev/null
+    fi
     bashtion-pack; rc=$?
     ls -A /tmp | grep -vx fill >&3
+    [ "$3" != nomarker ] || ls -A /usr/lib/bashtion | grep -vx fill >&3
     exit $rc' sh "$@"
 }
 
@@ -454,6 +464,18 @@ ck "#70 unpack accepts it"                       "[ $rc = 0 ]"
 ck "#70 a home file saved read-only comes back"  "grep -qx canary-70 /home/user/marker-70.txt"
 ck "#70 its deletion list replays"               "! test -e /etc/bashtion-70-gone"
 ck "#70 unpack puts session.json back in place"  "grep -q bashtion-70-gone /var/lib/bashtion/session.json"
+
+echo "==> #70/#72 ...and it saves even when the format-2 marker cannot be put back"
+# The marker is the one thing pack may still write to /, and only once it has
+# gone. On a full root that write fails, and the save must not fail with it:
+# pack says so and archives the work without the marker.
+rc=0; pack_in_ns 8m room nomarker > /tmp/nomark.tgz 2> /tmp/nomark.err 3> /tmp/nomark.left || rc=$?
+sed 's/^/     /' /tmp/nomark.err
+ck "#70/#72 test setup: a private read-only root (rc=$rc)" "[ $rc != 99 ]"
+ck "#70/#72 pack succeeds without the marker"            "[ $rc = 0 ] && test -s /tmp/nomark.tgz"
+ck "#70/#72 ...says it could not write it"               "grep -q '^bashtion-pack: cannot write $MARKER' /tmp/nomark.err"
+ck "#70/#72 ...leaves no half-made marker, nor staging"  "! test -s /tmp/nomark.left"
+ck "#70/#72 ...and the archive still names this build"   "[ \"\$(meta /tmp/nomark.tgz build)\" = \"\$(bid)\" ]"
 
 echo "==> #70 ...and when even /tmp is full, it fails in one clean line"
 rc=0; pack_in_ns 4k full > /tmp/nospace.tgz 2> /tmp/nospace.err 3> /tmp/nospace.left || rc=$?

@@ -202,6 +202,49 @@ def run_checks(con):
     rc, out = capture(con, 'lsblk -dno NAME,SIZE /dev/vdb')
     check('#55 the spare disk /dev/vdb is present', rc == 0 and 'vdb' in out, out)
 
+    # ---- #70 a file-size cap that makes an oversized fallocate atomic -----
+    # ext4 keeps whatever fallocate managed to allocate before ENOSPC, so a
+    # `fallocate -l 10G` on / used to strand ~240 MB and leave the disk full.
+    # RLIMIT_FSIZE is checked before anything is allocated. The cap is the size
+    # of /dev/vdb, applied by pam_limits at the autologin - so it is also in
+    # every restored session - and root needs its own line: su resets the
+    # limit, and '*' never matches root.
+    rc, out = capture(con, 'lsblk -bdno SIZE /dev/vdb')
+    check('#70 /dev/vdb is 4 GiB', out.strip() == str(4 << 30), out)
+    rc, out = capture(con, 'echo "soft=$(ulimit -Sf) hard=$(ulimit -Hf)"')
+    check('#70 the shell has a soft 4 GiB file-size cap, hard unlimited',
+          'soft=4194304 hard=unlimited' in out, out)
+    rc, out = capture(con, "sudo bash -c 'ulimit -Sf'; sudo su -c 'ulimit -Sf'")
+    check('#70 root starts capped too, through sudo and through su',
+          out.split()[-2:] == ['4194304', '4194304'], out)
+    rc, out = capture(con, "(ulimit -f unlimited; ulimit -Sf); "
+                           "sudo bash -c 'ulimit -f unlimited; ulimit -Sf'")
+    check('#70 ulimit -f unlimited lifts it, on either side of sudo',
+          out.split()[-2:] == ['unlimited', 'unlimited'], out)
+    for who, sudo, path in (('the user', '', '/var/tmp/bashtion-70.img'),
+                            ('root via sudo', 'sudo ', '/bashtion-70.img')):
+        # Measured and cleaned up in one command, so a failure strands nothing.
+        # The refusal arrives as SIGXFSZ, whose default action dumps core into
+        # the cwd - on / - unless the soft core limit is 0, as Ubuntu's systemd
+        # sets it. A core there would also land in the #50 clean-pack check.
+        rc, out = capture(con,
+                          'b=$(df --output=used -B1 / | tail -1); '
+                          '%sfallocate -l 10G %s; r=$?; '
+                          'a=$(df --output=used -B1 / | tail -1); '
+                          'echo "rc=$r delta=$((a - b)) '
+                          'file=$(stat -c %%s:%%b %s 2>/dev/null || echo absent) '
+                          'cores=$(ls -d core core.[0-9]* 2>/dev/null | wc -l)"; '
+                          '%srm -f %s core core.[0-9]*' % (sudo, path, path, sudo, path), 300)
+        m = re.search(r'rc=(\d+) delta=(-?\d+) file=(\S+) cores=(\d+)', out)
+        frc, delta, left, cores = ((int(m.group(1)), int(m.group(2)), m.group(3),
+                                    int(m.group(4))) if m else (0, 0, '?', -1))
+        check('#70 fallocate -l 10G on / is refused for %s (rc %d)' % (who, frc),
+              m is not None and frc != 0, out)
+        check('#70 ...and strands nothing: no blocks held, df unchanged (%s, %+d bytes)'
+              % (left, delta), m is not None and left in ('absent', '0:0')
+              and abs(delta) < (64 << 10), out)
+        check('#70 ...and dumps no core onto / (%d)' % cores, cores == 0, out)
+
     # ---- #57 coherently offline ------------------------------------------
     rc, out = capture(con, 'systemctl is-enabled systemd-resolved.service')
     check('#57 systemd-resolved is masked', 'masked' in out, out)

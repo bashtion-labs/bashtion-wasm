@@ -96,12 +96,22 @@ alternate screen, for a line whose start has left the model's scrollback, and af
 cursor is restored across a scroll or resize (xterm.js moves it with the text; the model does
 not follow that), until the next fresh line, clear or reset.
 
+A shape cannot tell the shell from anything else reading the keyboard: `# ` typed at the start
+of a line into `cat > notes`, or vim's `/# ` search on the bottom row (under TERM=vt220 vim
+draws on the main screen), is just as prompt-shaped. So `atPrompt()` also takes the shell's
+word for it. The guest's login shell runs systemd's shell integration, which sends OSC 3008
+with `type=command` as each command starts and `type=shell` before each prompt; while the
+last word says a command has the terminal, only a whole `user@host:dir$ ` counts — a nested
+`bash`/`sudo -s`, which reads no profile.d and says nothing, prompts with Ubuntu's PS1 — and a
+bare `$ ` or `# ` does not. Where the shell has said nothing, the shape alone decides.
+
 ## Tests
 
 `node --test web/test/*.test.mjs` loads the real page scripts (no bundler, no imports) into a
 browser-shaped scope and drives them against a guest mock that reproduces readline's echo and
 a command reading the tty directly. The screen model is tested against real console output —
-bash/readline, vim, nano and apt under the guest's TERM, and QEMU's monitor — captured
-byte for byte into `test/console-captures.mjs`, and against short hand-written streams for
-what `atPrompt()` must refuse, each answer taken from the terminal behaviour it exercises
-rather than from the model. CI runs it as the `web-tests` job.
+bash/readline, vim, nano and apt under the guest's TERM, a login shell with systemd's shell
+integration, and QEMU's monitor — captured byte for byte into `test/console-captures.mjs`, and
+against short hand-written streams for what `atPrompt()` must refuse, each answer taken from
+the terminal behaviour it exercises rather than from the model. CI runs it as the `web-tests`
+job.

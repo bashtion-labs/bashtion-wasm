@@ -18,6 +18,12 @@
 // to put volumes on, so for the lvm-* captures `sudo` was a stub that prints
 // LVM's three success lines; everything readline drew is readline's own.
 //
+// None of those ran systemd's shell integration, which only a login shell
+// reads (/etc/profile.d/80-systemd-osc-context.sh): they are a console on
+// which the shell says nothing. shell-context is a login shell with it, the
+// script copied out of 26.04's systemd package (259.5), so each prompt and
+// each command comes bracketed in OSC 3008 as it does on the guest's console.
+//
 // Those passed through one tty, the guest's, so their lines end \r\n. In the
 // page they then pass through xterm-pty's ONLCR as well; mirror() applies it,
 // which is where the CR CR LF in window.__serial comes from.
@@ -205,6 +211,50 @@ export const CAPTURES = {
       '███████▊                       ] \x1b8\x1b7\x1b[24;0f\x1b[42m\x1b[30mProgress: [ 80%]\x1b[49' +
       'm\x1b[39m [██████████████████████████████████████████████▍           ] \x1b8\r\n' +
       '\x1b7\x1b[0;24r\x1b8\x1b[1A\x1b[Jroot@bashtion:~# '],
+  ] },
+  // A login shell running systemd 259's shell integration, as the guest's
+  // autologin shell does: `cat > /tmp/notes` with `# ` typed at the start
+  // of its first line, then Enter and Ctrl-D; vim's `/# ` search; a nested
+  // `bash`, which reads no profile.d and says nothing, and the same `cat`
+  // in it; `exit`; and an empty line, which is how the restore page wakes it.
+  'shell-context': { guest: true, steps: [
+    ['boot', '\x1b]3008;start=87475e44-9eb9-44df-849e-d591a53875e2;machineid=;user=user;hostname=bashtion;boot' +
+      'id=da157382-da0d-4175-bb4c-d4f381c5a52b;pid=00000000000000000007;type=shell;cwd=/home/user\x1b\\' +
+      'user@bashtion:~$ '],
+    ['cat', 'cat > /tmp/notes\r\n\x1b]3008;start=8db2794e-ffb8-4ce4-910f-f39241cf2cb3;machineid=;user=user;ho' +
+      'stname=bashtion;bootid=da157382-da0d-4175-bb4c-d4f381c5a52b;pid=00000000000000000007;type=comman' +
+      'd;cwd=/home/user\x1b\\'],
+    ['comment', '# '],
+    ['eof', '\r\n\x1b]3008;end=8db2794e-ffb8-4ce4-910f-f39241cf2cb3;exit=success\x1b\\\x1b]3008;start=87475e4' +
+      '4-9eb9-44df-849e-d591a53875e2;machineid=;user=user;hostname=bashtion;bootid=da157382-da0d-4175-b' +
+      'b4c-d4f381c5a52b;pid=00000000000000000007;type=shell;cwd=/home/user\x1b\\user@bashtion:~$ '],
+    ['vim', 'vim.tiny -N -u NONE /tmp/notes\r\n\x1b]3008;start=10b7429c-c3b1-47aa-b049-1dc65a17daa9;machineid' +
+      '=;user=user;hostname=bashtion;bootid=da157382-da0d-4175-bb4c-d4f381c5a52b;pid=000000000000000000' +
+      '07;type=command;cwd=/home/user\x1b\\\x1b[1;24r\x1b[27m\x1b[24m\x1b[0m\x1b(B\x1b[H\x1b[J\x1b[?25l' +
+      '\x1b[24;1H"/tmp/notes" 1L, 3B\x1b[2;1H▽\x1b[6n\x1b[2;1H  \x1b[3;1H\x1bPzz\x1b\\\x1b[0%m\x1b[6n' +
+      '\x1b[3;1H           \x1b[1;1H\x1b[1;1H#\x1b[2;2H\x1b[K\x1b[2;1H\x1b[1m~\x1b[0m\x1b(B\x1b[3;2H' +
+      '\x1b[K\x1b[3;1H\x1b[1m~\r\n~\r\n~\r\n~\r\n' +
+      '~\r\n~\r\n~\r\n~\r\n~\r\n~\r\n~\r\n~\r\n~\r\n' +
+      '~\r\n~\r\n~\r\n~\r\n~\r\n~\r\n~\r\n~\x1b[0m\x1b(B\x1b[24;63H1,1\x1b[11CAll\x1b[1;1H\x1b[?25h'],
+    ['search', '\x1b[?25l\x1b[24;53H/\x1b[1;1H\x1b[24;1H\x1b[K\x1b[24;1H/\x1b[?25h# '],
+    ['quit', '\x1b[?25l\x1b[24;1H\x1b[K\x1b[1;1H\x1b[24;63H1,1\x1b[11CAll\x1b[1;1H\x1b[?25h\x1b[?25l\x1b[24;53' +
+      'H:\x1b[1;1H\x1b[24;53H\x1b[K\x1b[24;1H:\x1b[?25hq!\r\x1b[?25l\x1b[?25h\x1b[24;1H\x1b[K\x1b[24;1H' +
+      '\x1b]3008;end=10b7429c-c3b1-47aa-b049-1dc65a17daa9;exit=success\x1b\\\x1b]3008;start=87475e44-9e' +
+      'b9-44df-849e-d591a53875e2;machineid=;user=user;hostname=bashtion;bootid=da157382-da0d-4175-bb4c-' +
+      'd4f381c5a52b;pid=00000000000000000007;type=shell;cwd=/home/user\x1b\\user@bashtion:~$ '],
+    ['bash', 'bash\r\n\x1b]3008;start=d6e1c5ab-5e5d-4429-b3ca-bf0f3d59e971;machineid=;user=user;hostname=basht' +
+      'ion;bootid=da157382-da0d-4175-bb4c-d4f381c5a52b;pid=00000000000000000007;type=command;cwd=/home/' +
+      'user\x1b\\user@bashtion:~$ '],
+    ['nested cat', 'cat > /tmp/notes2\r\n'],
+    ['nested comment', '# '],
+    ['nested eof', '\r\nuser@bashtion:~$ '],
+    ['exit', 'exit\r\nexit\r\n\x1b]3008;end=d6e1c5ab-5e5d-4429-b3ca-bf0f3d59e971;exit=success\x1b\\\x1b]3008;s' +
+      'tart=87475e44-9eb9-44df-849e-d591a53875e2;machineid=;user=user;hostname=bashtion;bootid=da157382' +
+      '-da0d-4175-bb4c-d4f381c5a52b;pid=00000000000000000007;type=shell;cwd=/home/user\x1b\\user@bashti' +
+      'on:~$ '],
+    ['enter', '\r\n\x1b]3008;end=4480782c-670a-4e39-bf52-4c2803a87cee;exit=success\x1b\\\x1b]3008;start=87475e4' +
+      '4-9eb9-44df-849e-d591a53875e2;machineid=;user=user;hostname=bashtion;bootid=da157382-da0d-4175-b' +
+      'b4c-d4f381c5a52b;pid=00000000000000000007;type=shell;cwd=/home/user\x1b\\user@bashtion:~$ '],
   ] },
   monitor: { guest: false, steps: [
     ['ctrl-a c', 'QEMU 10.2.1 monitor - type \'help\' for more information\r\r\n' +

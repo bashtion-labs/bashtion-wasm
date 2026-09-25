@@ -206,6 +206,49 @@ test('#69 atPrompt: `# ` typed in an editor is not a root prompt', () => {
   }
 });
 
+test('#69 atPrompt: `# ` typed into a running command is not a prompt', () => {
+  // `cat > notes` reads the tty itself, and under TERM=vt220 vim draws its
+  // `/` search on the main screen's bottom row. Either way `# ` is the last
+  // thing on the screen with nothing after it - prompt-shaped - and the page
+  // would type `stty rows …` and Enter into the file or the search. What
+  // rules it out is the shell's own word (OSC 3008) that a command has the
+  // terminal. A nested bash says nothing and prompts with Ubuntu's PS1: that
+  // is still a prompt, and a bare `# ` in a command it runs still is not.
+  for (const [step, line, idle] of [
+    ['boot', 'user@bashtion:~$', true],
+    ['comment', '#', false],
+    ['eof', 'user@bashtion:~$', true],
+    ['search', '/#', false],
+    ['quit', 'user@bashtion:~$', true],
+    ['bash', 'user@bashtion:~$', true],
+    ['nested comment', '#', false],
+    ['nested eof', 'user@bashtion:~$', true],
+    ['exit', 'user@bashtion:~$', true],
+    ['enter', 'user@bashtion:~$', true],
+  ]) {
+    assert.equal(lastOf(mirror('shell-context', step)), line, step);
+    assert.equal(atCap('shell-context', step), idle, step);
+  }
+});
+
+test('#69 atPrompt takes the shell\'s last complete word on whose the terminal is', () => {
+  const word = (type, end = '\x1b\\') => `\x1b]3008;start=1f;user=user;hostname=bashtion;type=${type}${end}`;
+  const read = (said) => at('\r\n' + said + '$ ');   // e.g. `read -p '$ '`
+  assert.equal(read(''), true, 'no word from the shell: the shape decides');
+  assert.equal(read(word('shell')), true);
+  for (const end of ['\x1b\\', '\x07', '\x9c']) assert.equal(read(word('command', end)), false, JSON.stringify(end));
+  // anything the shell hands the terminal to, and only until it takes it back
+  assert.equal(read(word('elevate')), false);
+  assert.equal(read(word('command') + '\x1b]3008;end=1f;exit=success\x1b\\' + word('shell')), true);
+  // a terminal reset or a clear is not the shell taking the terminal back
+  assert.equal(read(word('command') + '\x1bc\x1b[H\x1b[J'), false);
+  // an OSC abandoned before its end is not a word, and nor is a DCS saying it
+  assert.equal(read(word('command') + word('shell', '\x18')), false);
+  assert.equal(read(word('command') + '\x1bP3008;start=1f;type=shell\x1b\\'), false);
+  // a whole `user@host:dir$ ` is a nested bash's, and that one still counts
+  assert.equal(at(word('command') + '\r\nroot@bashtion:/srv/my files# '), true);
+});
+
 test('#69 atPrompt follows apt\'s progress bar through its scroll region', () => {
   // apt pins the bar to the bottom row by narrowing the scroll region above
   // it, and redraws it by absolute address between a save and a restore of
@@ -328,6 +371,7 @@ const ENDS = {
   vim: ['#', false],             // `# ` typed on the file's first line
   nano: ['#', false],
   apt: ['root@bashtion:~#', true],
+  'shell-context': ['user@bashtion:~$', true],
   monitor: ['(qemu)', false],    // after `info status`
 };
 

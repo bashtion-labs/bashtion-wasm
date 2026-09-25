@@ -127,6 +127,12 @@ const SERIALTAP = (() => {
     let top, bottom;              // scroll region, inclusive
     let wrap, origin, insert;
     let state = GROUND, params = '', inter = '';
+    let osc = null;               // the OSC being read (null in a DCS, SOS, PM or APC)
+    // Whose the terminal is, as far as the guest's shell has said (OSC 3008,
+    // see atPrompt()): 'shell' at its prompt, 'command' once it has handed
+    // the terminal over, null if it has said nothing. A terminal reset does
+    // not change it; only the shell does.
+    let context = null;
     // xterm.js saves a cursor's row counted from the top of the whole buffer,
     // so one restored after the main screen has scrolled into its scrollback
     // (or been resized) comes back that many rows higher - or not, once the
@@ -366,12 +372,22 @@ const SERIALTAP = (() => {
       }
     }
 
+    // UAPI.15's OSC 3008, as systemd's shell integration sends it: a start
+    // with type=shell just before each prompt, one with type=command as each
+    // command line starts to run. Every other type (elevate, app, ...) is
+    // something the shell has handed the terminal to, and an end is always
+    // followed by the shell's own start once it has the terminal back.
+    function said(p) {
+      if (!/^3008;start=/.test(p)) return;
+      context = /;type=shell(;|$)/.test(p) ? 'shell' : 'command';
+    }
+
     function escape(ch, c) {
       state = GROUND;
       switch (ch) {
         case '[': state = CSI; params = inter = ''; return;
-        case ']': state = OSC; return;
-        case 'P': case 'X': case '^': case '_': state = STR; return;
+        case ']': state = OSC; osc = ''; return;
+        case 'P': case 'X': case '^': case '_': state = STR; osc = null; return;
         case '7': save(); return;
         case '8': restore(); return;
         case 'D': lineFeed(); return;
@@ -390,19 +406,21 @@ const SERIALTAP = (() => {
           if (c >= 0x20 && c !== 0x7f && (c < 0x80 || c >= 0xa0)) print(ch, width(c));
           else if (c === 0x1b) state = ESC;
           else if (c === 0x9b) { state = CSI; params = inter = ''; }
-          else if (c === 0x9d) state = OSC;
-          else if (c === 0x90 || c === 0x98 || c === 0x9e || c === 0x9f) state = STR;
+          else if (c === 0x9d) { state = OSC; osc = ''; }
+          else if (c === 0x90 || c === 0x98 || c === 0x9e || c === 0x9f) { state = STR; osc = null; }
           else control(c);
         } else if (c === 0x18 || c === 0x1a) {
           state = GROUND;                                 // CAN, SUB: abandon the sequence
         } else if (state === OSC || state === STR) {
-          // Skipped whole. BEL ends an OSC, but in a DCS, SOS, PM or APC it is
-          // payload: those end only at ST, and what follows a BEL in one is
-          // still not on the screen.
-          if (c === 0x9c || (c === 0x07 && state === OSC)) state = GROUND;
+          // Nothing in them reaches the screen. BEL ends an OSC, but in a DCS,
+          // SOS, PM or APC it is payload: those end only at ST, and what
+          // follows a BEL in one is still not on the screen. An OSC is read
+          // for what the shell says in it; the rest are skipped.
+          if (c === 0x9c || (c === 0x07 && state === OSC)) { state = GROUND; if (osc !== null) said(osc); }
           else if (c === 0x1b) state = STR_ESC;
+          else if (osc !== null && c >= 0x20 && osc.length < 1024) osc += ch;
         } else if (state === STR_ESC) {
-          if (ch === '\\') state = GROUND;
+          if (ch === '\\') { state = GROUND; if (osc !== null) said(osc); }
           else if (c === 0x1b) state = ESC;
           else if (c < 0x20) { state = ESC; control(c); }
           else escape(ch, c);
@@ -470,6 +488,7 @@ const SERIALTAP = (() => {
       write,
       lines,
       cursorLine,
+      context: () => context,
       lastLine() { const c = cursorLine(); return (c.before + c.after).replace(/ +$/, ''); },
     };
   }
@@ -533,17 +552,35 @@ const SERIALTAP = (() => {
   // looks like a line of its own. So: the cursor's line, joined across its
   // wraps, must be prompt-shaped up to the cursor and empty after it, and
   // nothing may be on the screen below it. A shell prompt is the last thing
-  // on the screen; an editor's cursor line never is (vim's status line,
-  // nano's shortcut bar), and without that test `# ` typed at the start of a
-  // line in vim is a root prompt.
+  // on the screen; an editor's text never is (vim's status line, nano's
+  // shortcut bar), and without that test `# ` typed at the start of a line
+  // in vim is a root prompt.
+  //
+  // A shape cannot tell a shell from whatever else is reading the keyboard,
+  // though. `# ` typed at the start of a line into `cat > notes`, or vim's
+  // `/# ` search on its bottom row (under the guest's TERM=vt220 vim draws
+  // on the main screen), is the last thing on the screen and prompt-shaped.
+  // So atPrompt() also asks the shell. The guest's login shell runs
+  // systemd's shell integration, which says (OSC 3008) when it hands the
+  // terminal to a command and when it takes it back for a prompt. While a
+  // command has it, a bare `$ ` or `# ` is not the shell's. Only a whole
+  // `user@host:dir$ ` counts then: a nested bash (`sudo -s`, `sudo su`,
+  // `bash`) reads no profile.d, so it prompts with Ubuntu's PS1 and says
+  // nothing, and refusing it would starve the resize sync for as long as
+  // the student works in it. With no word from the shell at all - before
+  // the first prompt, or a guest without the integration - the shape alone
+  // decides, as it always did.
   //
   // Wherever the model cannot vouch for its reading of that line, the answer
   // is no. A wrong "busy" only delays the page; a wrong "idle" types into
   // whatever owns the keyboard.
-  const PROMPT = /^(?:\S*|[^\s@$#]+@[^\s:$#]+:[^$#]*)[$#] $/;
+  const PS1 = '[^\\s@$#]+@[^\\s:$#]+:[^$#]*';
+  const PROMPT = new RegExp('^(?:\\S*|' + PS1 + ')[$#] $');
+  const NESTED = new RegExp('^' + PS1 + '[$#] $');
   function atPrompt(win) {
-    const c = screenOf(win).cursorLine();
-    return c.sure && PROMPT.test(c.before) && !/\S/.test(c.after) && !c.below;
+    const scr = screenOf(win), c = scr.cursorLine();
+    const shape = scr.context() === 'command' ? NESTED : PROMPT;
+    return c.sure && shape.test(c.before) && !/\S/.test(c.after) && !c.below;
   }
 
   return {

@@ -113,6 +113,24 @@ Installed packages (`/var/lib/dpkg` plus their unpacked files) and `/var` genera
 captured - they are far too large for this channel. `apt install` from the offline repo has to
 be repeated after a restore. The UI says so at save time.
 
+**An archive is tied to the build that saved it.** Its system half is a diff from that image's
+baseline, and its deletion list is that image's file list, so it only means something on the
+same image. Each image carries a build id (`/usr/local/lib/bashtion/build-id`, the sha256 of
+the baseline it ships with) and every archive records it in `session.json` (format 2).
+`bashtion-unpack` reads `session.json` out of the archive before extracting anything, then:
+
+- **same build** - restores everything, as above;
+- **a different build, or no build recorded** (every archive saved before format 2) - restores
+  `/home/user` only, `~/share` included, and skips the system files and the deletions, which
+  would otherwise silently revert whatever the newer image changed in the same files. It
+  prints a warning naming both builds, and the page reports "Only your home folder was
+  restored" rather than a plain success;
+- **a format newer than it understands, or an unreadable `session.json`** - refuses, having
+  written nothing.
+
+So after the guest image is rebuilt and redeployed, work saved before the update comes back
+home-only, and system changes have to be made again.
+
 **How it travels.** The payload is fed to a command reading the tty directly (`head -c N`),
 never to a heredoc: readline echoes and redisplays every line typed at an interactive prompt
 whatever `stty -echo` says, which sent the archive down the wire twice and redrew each 4 KB

@@ -450,7 +450,9 @@ RUN du -x --max-depth=2 --block-size=1M /rootfs 2>/dev/null | sort -rn | head -2
 # actually changed. Without it every save would have to carry all of /etc
 # across a serial console at a few hundred bytes a second. This must be the
 # LAST thing that touches the rootfs, or whatever came after would look
-# "changed" in every session.
+# "changed" in every session. It also stamps the build id every save records
+# and every restore compares (#72): the digest of this baseline, written into
+# /usr/local/lib/bashtion, which is outside what the baseline itself covers.
 RUN set -e; chroot /rootfs /usr/local/sbin/bashtion-baseline; \
     lines=$(wc -l < /rootfs/usr/local/lib/bashtion/baseline.tsv); \
     echo "baseline: ${lines} paths"; \
@@ -468,6 +470,13 @@ RUN set -e; \
       { echo "FATAL: pack excluded the share directory"; exit 1; }; \
     rm -f /rootfs/tmp/probe.tgz /rootfs/tmp/probe.err /rootfs/home/user/.bashtion-canary; \
     chroot /rootfs /usr/local/sbin/bashtion-baseline
+# The id has to name the baseline the image ships with - the one written last,
+# just above - or a save and a restore on this very build would disagree.
+RUN set -e; d=/rootfs/usr/local/lib/bashtion; \
+    ident=$(cat "$d/build-id"); \
+    [ "$ident" = "$(sha256sum < "$d/baseline.tsv" | cut -d' ' -f1)" ] || \
+      { echo "FATAL: build-id '$ident' is not the digest of baseline.tsv"; exit 1; }; \
+    echo "build id: $ident"
 
 # ------------------------------------------------------------- disk images
 # root: measured content + a real free-space TARGET.
@@ -528,6 +537,7 @@ def sha(p):
 json.dump({
     'suite': '${SUITE}', 'snapshot': '${SNAPSHOT}',
     'kernel': open('/kver').read().strip(),
+    'build_id': open('/rootfs/usr/local/lib/bashtion/build-id').read().strip(),
     'artifacts': {p: {'bytes': os.path.getsize('/out/' + p), 'sha256': sha('/out/' + p)}
                   for p in os.listdir('/out')},
 }, open('/out/manifest.json', 'w'), indent=1)

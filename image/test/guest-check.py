@@ -282,11 +282,32 @@ def run_checks(con):
     rc, err = capture(con, 'cat /tmp/probe.err')
     print('     pack said: %s' % err.replace('\n', ' | ')[:900], flush=True)
 
+    # ---- #72 an archive names the build it was saved on -------------------
+    # A restore applies the system half only to that same build, so the image
+    # has to carry an id, the id has to describe the baseline it ships with
+    # (the one every save is a diff from), and pack has to record exactly it.
+    rc, stamp = capture(con, 'cat /usr/local/lib/bashtion/build-id')
+    stamp = stamp.strip()
+    check('#72 the image carries a build id',
+          re.fullmatch(r'[0-9a-f]{64}', stamp) is not None, stamp)
+    rc, out = capture(con, 'sha256sum < /usr/local/lib/bashtion/baseline.tsv')
+    check('#72 the build id is the digest of the shipped baseline',
+          out.split()[:1] == [stamp], out)
+    rc, out = capture(con, "tar xzOf /tmp/probe.tgz var/lib/bashtion/session.json | python3 -c "
+                           "'import json,sys; m=json.load(sys.stdin); "
+                           "print(\"FORMAT=%s BUILD=%s\" % (m.get(\"format\"), m.get(\"build\")))'")
+    m = re.search(r'FORMAT=(\S+) BUILD=(\S+)', out)
+    check('#72 pack records the build id, in format 2',
+          m is not None and m.group(1) == '2' and len(stamp) == 64
+          and m.group(2) == stamp, out)
+
     capture(con, 'rm -f ~/marker.txt ~/share/marker.txt; '
                  'sudo rm -rf /opt/example /etc/bashtion-probe; '
                  'sudo userdel -r exuser >/dev/null 2>&1; sudo groupdel exgroup', 300)
     rc, out = capture(con, 'sudo /usr/local/sbin/bashtion-unpack < /tmp/probe.tgz 2>&1', 600)
     check('#50 bashtion-unpack applies it', rc == 0, out)
+    check('#72 an archive from this same build restores in full',
+          'bashtion-unpack: restored; ' in out and 'home only' not in out, out)
 
     rc, out = capture(con, 'cat ~/marker.txt')
     check('#50 a home file comes back', 'canary-home' in out, out)
@@ -302,6 +323,27 @@ def run_checks(con):
     capture(con, 'sudo rm -rf /opt/example /etc/bashtion-probe /tmp/probe.tgz /tmp/probe.err; '
                  'rm -f ~/marker.txt ~/share/marker.txt; '
                  'sudo userdel -r exuser >/dev/null 2>&1; sudo groupdel exgroup', 300)
+
+    # ...and one from any other build brings back home, and nothing else.
+    other = '0' * 64
+    capture(con, 'rm -rf /tmp/x72 && mkdir -p /tmp/x72/home/user /tmp/x72/etc '
+                 '/tmp/x72/var/lib/bashtion && '
+                 'echo from-elsewhere > /tmp/x72/home/user/x72.txt && '
+                 'echo from-elsewhere > /tmp/x72/etc/bashtion-x72 && '
+                 "echo '{\"format\": 2, \"build\": \"%s\"}' "
+                 '> /tmp/x72/var/lib/bashtion/session.json && '
+                 'tar czf /tmp/x72.tgz -C /tmp/x72 home/user/x72.txt etc/bashtion-x72 '
+                 'var/lib/bashtion/session.json' % other)
+    rc, out = capture(con, 'sudo /usr/local/sbin/bashtion-unpack < /tmp/x72.tgz 2>&1', 600)
+    check('#72 an archive from another build restores home only',
+          rc == 0 and 'bashtion-unpack: restored home only; ' in out, out)
+    check('#72 ...and the warning names both builds',
+          other in out and len(stamp) == 64 and stamp in out, out)
+    rc, out = capture(con, 'cat ~/x72.txt; '
+                           'test -e /etc/bashtion-x72 && echo SYSTEM-APPLIED || echo SYSTEM-SKIPPED')
+    check('#72 its home file comes back', 'from-elsewhere' in out, out)
+    check('#72 its system file does not', 'SYSTEM-SKIPPED' in out, out)
+    capture(con, 'sudo rm -rf /tmp/x72 /tmp/x72.tgz /etc/bashtion-x72; rm -f ~/x72.txt', 120)
 
     # ---- #60 the guest can be told the terminal's shape -------------------
     rc, out = capture(con, 'stty rows 43 cols 160; stty size')

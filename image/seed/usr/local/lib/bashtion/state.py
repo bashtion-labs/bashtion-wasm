@@ -24,23 +24,35 @@ sane size: installed packages (/var/lib/dpkg plus the unpacked files), /var
 generally, and the contents of /dev/vdb. `apt install` from the offline repo
 has to be repeated after a restore.
 
+The system half of an archive only means something against the image it was
+saved on: it is a diff from THAT image's baseline, and its deletion list is
+that image's file list. Restored into a rebuilt image it silently puts back the
+old copy of every file the rebuild fixed. So each archive records the build it
+came from, and unpack applies the system half only to the same build; anywhere
+else it restores the home directory alone and says so.
+
   usage: state.py baseline        record what the image shipped as (build time)
          state.py pack            write a .tar.gz of the session to stdout
          state.py unpack          read one from stdin and apply it
 """
+import hashlib
 import json
 import os
 import stat
 import subprocess
 import sys
+import textwrap
 import time
 
 HOME = '/home/user'
 SYSTEM_ROOTS = ['/etc', '/opt', '/srv', '/usr/local', '/root', '/var/spool/cron']
 STATE_DIR = '/var/lib/bashtion'
 BASELINE = '/usr/local/lib/bashtion/baseline.tsv'
+BUILD_ID = '/usr/local/lib/bashtion/build-id'
 SESSION = STATE_DIR + '/session.json'
-FORMAT = 1
+# 1: format, created, roots, home, deleted.
+# 2: adds build, the BUILD_ID of the image that saved it.
+FORMAT = 2
 
 # Machine identity and things regenerated on every boot: restoring these onto a
 # different session is wrong, not merely useless.
@@ -50,7 +62,7 @@ SKIP_EXACT = {
     '/usr/local/lib/bashtion',
 }
 SKIP_PREFIX = (
-    '/usr/local/lib/bashtion/',   # the helpers themselves, and this baseline
+    '/usr/local/lib/bashtion/',   # the helpers, this baseline, the build id
     '/etc/ssh/ssh_host_',         # host keys, generated on first boot
 )
 
@@ -58,10 +70,17 @@ SKIP_PREFIX = (
 # have come from a different machine, or been edited - so refuse anything that
 # lands outside the tree this tool claims, and anything with a .. in it.
 ALLOWED = tuple(p.lstrip('/') + '/' for p in [HOME] + SYSTEM_ROOTS + [STATE_DIR])
+# ...and the same trees as archive member names spell them
+HOME_REL = HOME.lstrip('/')
+SESSION_REL = SESSION.lstrip('/')
 
 
 def skip(path):
     return path in SKIP_EXACT or path.startswith(SKIP_PREFIX)
+
+
+def in_home(member):
+    return (member + '/').startswith(HOME_REL + '/')
 
 
 def contained(path, roots):
@@ -140,7 +159,48 @@ def cmd_baseline():
                     continue
                 n += 1
     os.replace(tmp, BASELINE)
-    print('baseline: %d paths' % n)
+    print('baseline: %d paths, build %s' % (n, stamp_build_id()))
+
+
+def stamp_build_id():
+    """Name this build after its baseline, and write the name down.
+
+    The baseline is already a per-build fingerprint of exactly the trees an
+    archive carries: every path under the system roots, with its size, mode
+    and mtime. Any build step that writes one of those files - a package
+    unpacked from a newer snapshot, a Dockerfile edit to /etc - writes it with
+    that build's clock, so a rebuild that changes anything under the system
+    roots changes the baseline, and one build always has the same one.
+
+    Written by the same command that writes the baseline, so the two cannot
+    drift: re-running bashtion-baseline in a session changes what later saves
+    are a diff against, and it changes the name they carry with it.
+    """
+    h = hashlib.sha256()
+    with open(BASELINE, 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 16), b''):
+            h.update(chunk)
+    ident = h.hexdigest()
+    tmp = BUILD_ID + '.tmp'
+    with open(tmp, 'w') as f:
+        f.write(ident + '\n')
+    os.replace(tmp, BUILD_ID)
+    return ident
+
+
+def valid_id(ident):
+    return (isinstance(ident, str) and len(ident) == 64
+            and all(c in '0123456789abcdef' for c in ident))
+
+
+def build_id():
+    """This image's build identity, or None if it has none."""
+    try:
+        with open(BUILD_ID) as f:
+            ident = f.read().strip()
+    except OSError:
+        return None
+    return ident if valid_id(ident) else None
 
 
 def read_baseline():
@@ -185,7 +245,8 @@ def cmd_pack():
     os.makedirs(STATE_DIR, exist_ok=True)
     with open(SESSION, 'w') as f:
         json.dump({'format': FORMAT, 'created': int(time.time()),
-                   'roots': SYSTEM_ROOTS, 'home': HOME, 'deleted': deleted}, f)
+                   'roots': SYSTEM_ROOTS, 'home': HOME, 'deleted': deleted,
+                   'build': build_id()}, f)
 
     members = home + system + [SESSION]
     bytes_total = 0
@@ -228,6 +289,72 @@ def cmd_pack():
     sys.exit(0 if tar.returncode in (0, 1) else tar.returncode or 2)
 
 
+def read_meta(data, names):
+    """The archive's session.json, read out of the archive itself.
+
+    This happens before anything is extracted, because whether the archive
+    may touch the system roots at all depends on what it says. It is never
+    read back from disk: after an extraction that could be a previous save's
+    file, and a home-only restore does not extract it at all.
+
+    None when the archive carries none. One that cannot be understood - or a
+    format newer than this code - stops the restore here, while nothing has
+    been written yet: guessing at it is how a restore goes wrong silently.
+    """
+    if not names:
+        return None
+    if len(names) > 1:
+        sys.exit('bashtion-unpack: this archive carries more than one '
+                 'session.json; nothing was restored')
+    got = subprocess.run(['tar', 'xzf', '-', '-O', '--', names[0]],
+                         input=data, capture_output=True)
+    meta = None
+    if got.returncode == 0:
+        try:
+            meta = json.loads(got.stdout.decode('utf-8'))
+        except ValueError:
+            pass
+    if not isinstance(meta, dict):
+        sys.exit("bashtion-unpack: this archive's session.json is unreadable; "
+                 'nothing was restored')
+    fmt = meta.get('format')
+    if type(fmt) is not int or fmt < 1:
+        sys.exit('bashtion-unpack: unknown archive format %.40r; nothing was '
+                 'restored' % (fmt,))
+    if fmt > FORMAT:
+        sys.exit('bashtion-unpack: this archive was saved by a newer bashtion '
+                 '(format %d; this one reads up to %d); nothing was restored'
+                 % (fmt, FORMAT))
+    return meta
+
+
+def home_only(members, meta, theirs, ours):
+    """Say, loudly, that only the home directory came back - and why."""
+    system = sum(1 for m in members if not in_home(m) and m != SESSION_REL)
+    deleted = meta.get('deleted') if meta else None
+    gone = len(deleted) if isinstance(deleted, list) else 0
+    if theirs is None:
+        why = 'this archive does not record which build of bashtion saved it'
+    elif ours is None:
+        why = 'this machine has no build id to compare the archive with'
+    else:
+        why = 'this archive was saved on a different build of bashtion'
+    lines = ['WARNING: %s.' % why,
+             '  archive saved on build: %s' % (theirs or 'none recorded'),
+             '  this machine is build:  %s' % (ours or 'unknown')]
+    lines += textwrap.wrap(
+        "Only %s was restored. The archive's changes under %s, and its "
+        'deletions, were recorded against the image that saved it: applied '
+        'here they could silently undo what this build changed, so they were '
+        'NOT applied.' % (HOME, ' '.join(SYSTEM_ROOTS)), 60)
+    # Last, and on one line: the page reports the restore from this line alone.
+    lines.append('restored home only; %d system paths and %d deletions not '
+                 'applied (archive build %s, this build %s)'
+                 % (system, gone, (theirs or 'none')[:12], (ours or 'unknown')[:12]))
+    for line in lines:
+        print('bashtion-unpack: ' + line, file=sys.stderr)
+
+
 def cmd_unpack():
     data = sys.stdin.buffer.read()
     if not data:
@@ -237,6 +364,8 @@ def cmd_unpack():
     if listed.returncode != 0:
         sys.exit('bashtion-unpack: not a readable archive')
     members = set()
+    sessions = []                 # session.json, as the listing spells it
+    home = set()                  # the home tree, once per spelling of its ./
     for name in listed.stdout.decode('utf-8', 'replace').splitlines():
         n = name.lstrip('./')
         if not n:
@@ -246,35 +375,53 @@ def cmd_unpack():
         if not (n + '/').startswith(ALLOWED):
             sys.exit('bashtion-unpack: refusing path outside the session: %r' % name)
         members.add(n.rstrip('/'))
+        if n.rstrip('/') == SESSION_REL:
+            sessions.append(name)
+        # tar selects members by exact name, `./home/user` and `home/user`
+        # being different ones, and the listing escapes unusual characters -
+        # so select the home tree by its root, spelled as this archive does.
+        if in_home(n):
+            home.add(name[:len(name) - len(n)] + HOME_REL)
 
-    out = subprocess.run(
-        ['tar', 'xzf', '-', '-C', '/', '--numeric-owner', '--same-owner',
-         '--same-permissions', '--acls', '--xattrs', '--xattrs-include=*'],
-        input=data, capture_output=True)
-    if out.returncode not in (0, 1):
-        err = out.stderr.decode('utf-8', 'replace').strip().splitlines()
-        sys.exit('bashtion-unpack: %s' % (err or ['tar failed'])[-1])
+    # The system half of an archive is a diff from the image that saved it,
+    # and its deletion list is that image's file list. Applied to the same
+    # build it restores the session exactly. Applied to any other it puts back
+    # the saved copy of every file the newer build changed - reverting its
+    # fixes, silently - and replays removals derived from a different tree.
+    # So it applies only when both sides name the same build; otherwise the
+    # home directory, which means the same thing on any build, is all that
+    # comes back. That includes every archive saved before builds were named.
+    meta = read_meta(data, sessions)
+    theirs = meta.get('build') if meta else None
+    theirs = theirs if valid_id(theirs) else None
+    ours = build_id()
+    full = theirs is not None and theirs == ours
+
+    # ALLOWED has already refused anything outside HOME, the system roots and
+    # STATE_DIR, so HOME is the only home tree an archive can carry.
+    select = [] if full else ['--'] + sorted(home)
+    if full or home:
+        out = subprocess.run(
+            ['tar', 'xzf', '-', '-C', '/', '--numeric-owner', '--same-owner',
+             '--same-permissions', '--acls', '--xattrs', '--xattrs-include=*']
+            + select, input=data, capture_output=True)
+        if out.returncode not in (0, 1):
+            err = out.stderr.decode('utf-8', 'replace').strip().splitlines()
+            sys.exit('bashtion-unpack: %s' % (err or ['tar failed'])[-1])
+    if not full:
+        return home_only(members, meta, theirs, ours)
 
     # A file the user deleted stays deleted: without this a restore is a
     # union of every session that ever ran, and removals never take.
     #
     # This list is ARCHIVE-SUPPLIED - session.json is a member like any other -
-    # so it gets the same containment treatment as the member names, and only
-    # when this archive actually carried one. Reading whatever session.json
+    # so it gets the same containment treatment as the member names, and it is
+    # the one read out of this archive above. Reading whatever session.json
     # happens to be on disk would replay the previous save's deletions over
     # files the current archive just restored.
-    if SESSION.lstrip('/') not in members:
-        print('bashtion-unpack: restored; no deletion list in this archive',
-              file=sys.stderr)
-        return
-    try:
-        with open(SESSION) as f:
-            meta = json.load(f)
-    except (OSError, ValueError):
-        return
     deleted = meta.get('deleted', [])
     if not isinstance(deleted, list):
-        return
+        deleted = []
     removed = refused = 0
     # Deepest first: sorted() puts /opt/pkg before /opt/pkg/a, so replaying in
     # that order hits rmdir on a directory whose children are still there,

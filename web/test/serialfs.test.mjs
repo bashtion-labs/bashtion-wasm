@@ -271,6 +271,71 @@ test('#50/#51 save and restore go through the guest helpers, not a bare tar of $
   assert.ok(!/tar czf - -C \/home\/user/.test(packCmd), 'save must not be a bare tar of $HOME');
 });
 
+// -------------------------------------------------------------------- #72
+// What bashtion-unpack prints last when the archive came from another build
+// of the image: it restored the home directory, and nothing else.
+const HOME_ONLY = 'bashtion-unpack: restored home only; 4 system paths and 1 deletions ' +
+                  'not applied (archive build none, this build 0123456789ab)';
+
+test('#72 a home-only restore is reported as such, not as a plain success', async () => {
+  const p = sfs({ unpackSays: HOME_ONLY });
+  const status = [];
+  p.win.__sfsStatus = (m) => status.push(m);
+  p.storage.files.set('bashtion-work.tgz', archive(3000, 47));
+  assert.equal(await p.SERIALFS.load(), 'home-only');
+  const title = findOverlay(p, 'bwOvTitle').textContent;
+  assert.match(title, /only your home folder/i);
+  assert.doesNotMatch(title, /✓/, 'a partial restore wears the success tick: ' + title);
+  assert.notEqual(findOverlay(p, 'bwOvBar').style.background, '#3ec77a',
+                  'a partial restore is painted as a plain success');
+  assert.match(findOverlay(p, 'bwOvSub').textContent, /different version/,
+               'the overlay must say why only home came back');
+  // The overlay hides itself; the status line is what is still there later.
+  assert.match(status.at(-1) || '', /home folder only/);
+});
+
+test('#72 a full restore is still reported as the whole session', async () => {
+  const p = sfs({ unpackSays: 'bashtion-unpack: restored; 2 deletions applied' });
+  const status = [];
+  p.win.__sfsStatus = (m) => status.push(m);
+  p.storage.files.set('bashtion-work.tgz', archive(3000, 53));
+  assert.equal(await p.SERIALFS.load(), true);
+  assert.equal(findOverlay(p, 'bwOvTitle').textContent, '✓ Your work was restored');
+  assert.equal(findOverlay(p, 'bwOvBar').style.background, '#3ec77a');
+  assert.doesNotMatch(status.at(-1) || '', /only/);
+});
+
+test('#72 the verdict is read only once its whole line has arrived', async () => {
+  // "BWR-OK bashtion-unpack: restored home" ... " only; ..." - acting on the
+  // first piece reads a home-only restore as a full one.
+  const p = sfs({ unpackSays: HOME_ONLY, verdictInPieces: 800 });
+  p.storage.files.set('bashtion-work.tgz', archive(3000, 59));
+  assert.equal(await p.SERIALFS.load(), 'home-only');
+  assert.match(findOverlay(p, 'bwOvTitle').textContent, /only your home folder/i);
+});
+
+test('#72 an archive the guest refuses says why', async () => {
+  const why = 'bashtion-unpack: this archive was saved by a newer bashtion ' +
+              '(format 3; this one reads up to 2); nothing was restored';
+  const p = sfs({ unpackFails: why });
+  p.storage.files.set('bashtion-work.tgz', archive(3000, 61));
+  assert.equal(await p.SERIALFS.load(), false);
+  assert.equal(findOverlay(p, 'bwOvBar').style.background, '#e0663c');
+  assert.equal(findOverlay(p, 'bwOvSub').textContent, why);
+});
+
+test('#72 a finished warning does not tint the next transfer', async () => {
+  const p = sfs({ unpackSays: HOME_ONLY, archive: archive(1500) });
+  p.storage.files.set('bashtion-work.tgz', archive(3000, 67));
+  assert.equal(await p.SERIALFS.load(), 'home-only');
+  // the next operation starts while the warning is still up
+  const saving = p.SERIALFS.save();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(findOverlay(p, 'bwOvBar').style.background, '#4a9eff',
+               'an in-progress save is still painted in the warning colour');
+  await saving;
+});
+
 function findOverlay(page, id) {
   for (const el of page.globals.document.body.children) {
     if (el.id === 'bwOverlay') return el.querySelector('#' + id);

@@ -109,6 +109,13 @@ deleted stays deleted.
 way saving works here. If you need one after loading your work back, install it again — it
 takes a moment and needs no internet.
 
+**After bashtion is updated, only your home folder comes back.** A saved file remembers which
+version of bashtion made it. If you load it into a different version — for example, after
+bashtion was updated — the window says **"Only your home folder was restored"**. All your
+files are back, but your changes to system settings (files in `/etc`, users and groups, cron
+jobs, folders in `/opt`) are left out, because they could undo fixes in the new version. If
+you still need those changes, make them again.
+
 ## Things to know
 
 - **No internet inside.** bashtion cannot reach websites on the internet. `ping 8.8.8.8` will

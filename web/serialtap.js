@@ -59,7 +59,11 @@ const SERIALTAP = (() => {
   // TERM=vt220), plain output, and the full-screen programs a student runs -
   // apt's progress bar sets a scroll region, vim and nano address the cursor
   // directly. Colours, character sets and modes that move nothing are parsed
-  // and ignored.
+  // and ignored. It is not an emulation of xterm.js, and rarer sequences are
+  // only approximated. Where following xterm.js would take more than that -
+  // the alternate screen, a saved cursor restored across a scroll - the model
+  // says it cannot be sure (see cursorLine()) rather than guess, and
+  // atPrompt() takes that as "not idle".
   //
   // It follows xterm.js where the two could differ: the cursor may sit one
   // past the last column (the deferred wrap), an LF there cancels the wrap,
@@ -116,11 +120,19 @@ const SERIALTAP = (() => {
 
   function makeScreen(geometry) {
     let cols = 0, rows = 0;
-    let main, buf;                // buffers: { lines, base, keep }; buf is the active one
+    let main, buf;                // buffers: { lines, base, keep, saved }; buf is the active one
     let x, y;                     // cursor; x === cols is the deferred wrap
     let top, bottom;              // scroll region, inclusive
-    let wrap, origin, insert, saved, altSaved;
+    let wrap, origin, insert;
     let state = GROUND, params = '', inter = '';
+    // xterm.js saves a cursor's row counted from the top of the whole buffer,
+    // so one restored after the main screen has scrolled into its scrollback
+    // (or been resized) comes back that many rows higher - or not, once the
+    // scrollback is full. The model does not follow that arithmetic. It counts
+    // those events, and a restore across any of them leaves it unsure of the
+    // cursor's row until the next line starts afresh (an LF at column 0), a
+    // clear, or a reset.
+    let moves = 0, unsure = false;
 
     const size = () => {
       const g = geometry && geometry();
@@ -130,7 +142,7 @@ const SERIALTAP = (() => {
     // A buffer always holds exactly `rows` screen lines from `base` on; the
     // lines before `base` are its scrollback.
     const buffer = (keep) => {
-      const b = { lines: [], base: 0, keep };
+      const b = { lines: [], base: 0, keep, saved: null };
       for (let i = 0; i < rows; i++) b.lines.push(newRow());
       return b;
     };
@@ -140,7 +152,7 @@ const SERIALTAP = (() => {
       main = buf = buffer(SCROLLBACK);
       x = y = 0; top = 0; bottom = rows - 1;
       wrap = true; origin = false; insert = false;
-      saved = altSaved = null;
+      unsure = false;
     }
 
     // Follow the terminal's geometry the way xterm.js resizes: growing pulls
@@ -150,6 +162,7 @@ const SERIALTAP = (() => {
     function fit() {
       const g = size();
       if (g.cols === cols && g.rows === rows) return;
+      moves++;
       cols = g.cols;
       for (const b of buf === main ? [main] : [main, buf]) {
         const active = b === buf;
@@ -168,10 +181,14 @@ const SERIALTAP = (() => {
       y = Math.max(0, Math.min(y, rows - 1));
     }
 
+    // As xterm.js scrolls: a region that starts at the top row pushes that row
+    // into the scrollback even when it ends above the bottom one (apt's
+    // progress bar), and only a region below the top drops it.
     function scrollUp(n) {
       for (let k = 0; k < n; k++) {
-        if (top === 0 && bottom === rows - 1) {
-          buf.lines.push(newRow());
+        if (top === 0) {
+          buf.lines.splice(buf.base + bottom + 1, 0, newRow());
+          if (buf === main) moves++;
           if (++buf.base > buf.keep + 64) {
             buf.lines.splice(0, buf.base - buf.keep);
             buf.base = buf.keep;
@@ -191,6 +208,7 @@ const SERIALTAP = (() => {
 
     function lineFeed() {
       if (x >= cols) x = cols - 1;
+      if (x === 0) unsure = false;            // a fresh line: what is written on it next is known
       if (y === bottom) scrollUp(1);
       else if (y < rows - 1) y++;
     }
@@ -239,29 +257,32 @@ const SERIALTAP = (() => {
       }
     }
 
-    function save() { saved = { x, y, origin }; }
+    // Each buffer has its own saved cursor, as in xterm.js; 1049 saves and
+    // restores the main screen's.
+    function save() { buf.saved = { x, y, origin, moves }; }
     function restore() {
-      const s = saved || { x: 0, y: 0, origin: false };
-      x = Math.min(s.x, cols); y = Math.min(s.y, rows - 1); origin = s.origin;
+      const s = buf.saved || { x: 0, y: 0, origin: false, moves };
+      if (s.moves !== moves) unsure = true;
+      x = Math.min(s.x, cols - 1); y = Math.min(s.y, rows - 1); origin = s.origin;
     }
 
     function mode(p, on) {
       if (p === 7) wrap = on;
       else if (p === 6) { origin = on; x = 0; y = on ? top : 0; }
       else if (p === 47 || p === 1047 || p === 1049) {
-        if (on && buf === main) {
-          if (p === 1049) altSaved = { x, y };
-          buf = buffer(0);
-        } else if (!on && buf !== main) {
+        if (on) {
+          if (p === 1049) save();
+          if (buf === main) buf = buffer(0);
+        } else {
           buf = main;
-          if (p === 1049 && altSaved) { x = Math.min(altSaved.x, cols); y = Math.min(altSaved.y, rows - 1); }
+          if (p === 1049) restore();
         }
       }
     }
 
     function dispatch(final) {
       if (inter === '!' && final === 'p') {   // DECSTR, which systemd's tty reset sends
-        top = 0; bottom = rows - 1; wrap = true; origin = false; insert = false; saved = null;
+        top = 0; bottom = rows - 1; wrap = true; origin = false; insert = false; buf.saved = null;
         return;
       }
       if (inter) return;                      // DECSCUSR and the like: nothing positional
@@ -286,7 +307,9 @@ const SERIALTAP = (() => {
         case 'd': y = toRow(n - 1); x = cx; break;
         case 'H': case 'f': y = toRow(n - 1); x = Math.min(cols - 1, Math.max(1, ps[1] || 0) - 1); break;
         case 'J':
-          if (ps[0] === 3) { if (buf === main) { main.lines.splice(0, main.base); main.base = 0; } break; }
+          if (ps[0] === 3) { if (buf === main) { main.lines.splice(0, main.base); main.base = 0; moves++; } break; }
+          // all of the screen: nothing is left on it that could be misplaced
+          if (ps[0] === 2 || (ps[0] === 0 && x === 0 && y === 0)) unsure = false;
           if (ps[0] === 0) erase(cells, Math.min(x, cols), Infinity);
           if (ps[0] === 1) erase(cells, 0, cx + 1);
           for (let i = 0; i < rows; i++) {
@@ -396,8 +419,12 @@ const SERIALTAP = (() => {
     }
 
     // The logical line the cursor is on - its rows joined back across soft
-    // wraps - split at the cursor, and whether anything is on the screen below
-    // it.
+    // wraps - split at the cursor, whether anything is on the screen below it,
+    // and whether the model can vouch for any of that. It cannot on the
+    // alternate screen (a full-screen program's, never the shell's), with the
+    // cursor restored across a scroll (see `unsure`), or when the line's first
+    // row has gone out of the scrollback: what is left of a long line can be
+    // prompt-shaped when the whole of it is not.
     function cursorLine() {
       const L = buf.lines, at = buf.base + y;
       let s = at, e = at;
@@ -410,7 +437,8 @@ const SERIALTAP = (() => {
       for (let i = at + 1; i <= e; i++) after += text(L[i].cells, 0, L[i].cells.length);
       let below = false;
       for (let i = e + 1; i < buf.base + rows && !below; i++) below = !blank(L[i].cells);
-      return { before, after, below };
+      const sure = buf === main && !unsure && !L[s].wrapped;
+      return { before, after, below, sure };
     }
 
     // Every logical line held - scrollback, then the screen - down to the
@@ -498,9 +526,13 @@ const SERIALTAP = (() => {
   // on the screen; an editor's cursor line never is (vim's status line,
   // nano's shortcut bar), and without that test `# ` typed at the start of a
   // line in vim is a root prompt.
+  //
+  // Wherever the model cannot vouch for its reading of that line, the answer
+  // is no. A wrong "busy" only delays the page; a wrong "idle" types into
+  // whatever owns the keyboard.
   function atPrompt(win) {
     const c = screenOf(win).cursorLine();
-    return /^\S*[$#] $/.test(c.before) && !/\S/.test(c.after) && !c.below;
+    return c.sure && /^\S*[$#] $/.test(c.before) && !/\S/.test(c.after) && !c.below;
   }
 
   return {

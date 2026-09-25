@@ -209,6 +209,78 @@ test('#69 atPrompt through the restore page\'s resume', () => {
   assert.equal(lastOf(woken), 'user@bashtion:~$');
 });
 
+// Where the model cannot vouch for what is at the cursor, atPrompt() says no.
+const PS1 = 'user@bashtion:~$ ';
+
+test('#69 atPrompt: never on the alternate screen', () => {
+  // Under an xterm TERM, vim, less and the like switch to the alternate screen
+  // (terminfo smcup, ESC[?1049h ESC[22;0;0t) and back (rmcup, ESC[?1049l
+  // ESC[23;0;0t). Whatever is at the cursor there is theirs: here vim's
+  // command line part-way through `:%s/# /`, prompt-shaped and the last thing
+  // on the screen.
+  const smcup = '\x1b[?1049h\x1b[22;0;0t', rmcup = '\x1b[?1049l\x1b[23;0;0t';
+  const vim = PS1 + 'vim notes.sh\r\r\n' + smcup + '\x1b[1;24r\x1b[H\x1b[2J' +
+              '~\r\n'.repeat(23) + '\x1b[24;1H:%s/# ';
+  assert.equal(lastOf(vim), ':%s/#');
+  assert.equal(at(vim), false);
+  // 47 and 1047 switch to it too, without saving the cursor
+  for (const on of ['\x1b[?47h', '\x1b[?1047h']) {
+    assert.equal(at('\r\n' + on + '\x1b[H\x1b[2J# '), false, JSON.stringify(on));
+  }
+  // rmcup: the main screen again, the cursor back where smcup saved it, and
+  // the shell's prompt there is real
+  const quit = vim + '\x1b[24;1H\x1b[K' + rmcup + PS1;
+  assert.deepEqual(screenOf(quit), [PS1 + 'vim notes.sh', 'user@bashtion:~$']);
+  assert.equal(at(quit), true);
+});
+
+test('#69 atPrompt: not with the cursor restored across a scroll', () => {
+  // DECSC (ESC 7, or CSI s) saves the cursor, DECRC (ESC 8, CSI u) restores
+  // it. xterm.js counts the saved row from the top of the whole buffer, so if
+  // lines have scrolled into the scrollback in between, the cursor comes back
+  // with the text it was saved on - higher up the screen - until the
+  // scrollback is full. Here it is saved after `ab`, a line scrolls off, and
+  // xterm.js restores it after `ab`, one row up: the row the cursor was saved
+  // on now holds `# `, with nothing after it or below it.
+  const fill = 'x\r\n'.repeat(22);
+  for (const [sc, rc] of [['\x1b7', '\x1b8'], ['\x1b[s', '\x1b[u']]) {
+    assert.equal(at(fill + 'ab' + sc + '\r\n# \r\n' + rc), false, JSON.stringify(sc));
+  }
+  // A scroll region that starts at the top row (apt's) scrolls into the
+  // scrollback in xterm.js as well.
+  assert.equal(at('\x1b[1;23r' + fill + 'ab\x1b7\r\n# \x1b8'), false);
+  // So does a resize: growing by a row with the cursor on the bottom one
+  // pulls a row back out of the scrollback, and xterm.js's saved cursor stays
+  // with its text, a row further down than where it was saved.
+  const win = { __xterm: { cols: 80, rows: 24 } };
+  const master = fakeMaster(4096);
+  const t = tap();
+  t.install(master, win);
+  master.emit(new TextEncoder().encode('x\r\n'.repeat(30) + '# \r\n  \x1b7'));
+  win.__xterm.rows = 25;
+  master.emit(new TextEncoder().encode('\x1b8'));
+  assert.equal(t.atPrompt(win), false);
+  master.emit(new TextEncoder().encode('\r\n' + PS1));
+  assert.equal(t.atPrompt(win), true);
+  // With no scroll in between the restore is exact: a size probe (save, move
+  // far away, ask where the cursor is, restore) leaves the prompt a prompt.
+  assert.equal(at('\r\n' + PS1 + '\x1b7\x1b[32766;32766H\x1b[6n\x1b8'), true);
+  // A new line, a clear or a reset ends the doubt.
+  const restored = fill + 'ab\x1b7\r\n# \r\n\x1b8';
+  assert.equal(at(restored + '\r\n' + PS1), true);
+  assert.equal(at(restored + '\x1b[H\x1b[J' + PS1), true);
+  assert.equal(at(restored + '\x1bc' + PS1), true);
+});
+
+test('#69 atPrompt: not on a line whose start has left the scrollback', () => {
+  // The model keeps 1000 rows of scrollback. A command line longer than that
+  // - a long paste - loses its start, prompt and all, and what is left of
+  // `echo aaa…a$ ` is `aaa…a$ `: prompt-shaped.
+  const long = '\r\n' + PS1 + 'echo ' + 'a'.repeat(80 * 1100) + '$ ';
+  assert.match(lastOf(long), /^a+\$$/);
+  assert.equal(at(long), false);
+});
+
 test('#69 the live screen is the replay of the mirror, however the bytes are chunked', () => {
   // install() keeps a model in step with the mirror rather than replaying the
   // whole session on every question. Escape sequences and UTF-8 straddle the

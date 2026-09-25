@@ -14,7 +14,10 @@ if [ "${IN_CONTAINER:-}" != 1 ]; then
   HERE="$(cd "$(dirname "$0")/../.." && pwd)"
   # native arch on purpose: this exercises python/tar/acl semantics, not the
   # guest's architecture, and amd64-under-emulation has no statx for tar.
+  # SYS_ADMIN, and no AppArmor veto on mount(2), so the #70 checks can give
+  # pack a private mount namespace with a read-only root.
   exec docker run --rm -e IN_CONTAINER=1 \
+    --cap-add SYS_ADMIN --security-opt apparmor=unconfined \
     -v "$HERE:/src:ro" ubuntu:26.04 /bin/bash -c \
     'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq python3 acl cron >/dev/null 2>&1 && exec /src/image/test/state-roundtrip.sh'
 fi
@@ -54,6 +57,7 @@ rm -f /etc/bashtion-will-be-deleted
 echo "==> pack"
 bashtion-pack > /tmp/session.tgz
 ls -l /tmp/session.tgz
+ck "#70 pack cleans up its staging directory" "! compgen -G '/tmp/bashtion-pack-*'"
 
 echo "==> undo everything (as a reloaded page would)"
 rm -rf /home/user/marker.txt /home/user/share/marker.txt /opt/example
@@ -135,5 +139,61 @@ mkdir -p /tmp/plain/etc && printf 'restored\n' > /tmp/plain/etc/bashtion-stale
 rm -f /etc/bashtion-stale
 bashtion-unpack < /tmp/plain.tgz 2>&1 | sed 's/^/     /'
 ck "the archive's own file survives an unrelated stale list" "test -s /etc/bashtion-stale"
+
+# --- #70: a save has to work when / is full ---------------------------------
+# pack used to write session.json into /var/lib/bashtion before archiving it,
+# so on a full root filesystem the save - the one thing a user needs at that
+# moment - died with a traceback. Run it in a private mount namespace whose /
+# is READ-ONLY and whose /tmp is a fresh tmpfs. That refuses every write a
+# full disk would, plus the zero-byte ones a full disk still lets through, so
+# anything pack writes outside /tmp fails here. (image/test/guest-check.py
+# does the literal version: it fills the guest's / to 100% and saves.)
+#
+#   pack_in_ns SIZE room|full   stdout/stderr are pack's; fd 3 gets whatever
+#                               pack left behind in its /tmp; exit 99 means
+#                               the namespace itself could not be set up
+pack_in_ns() {
+  unshare --mount sh -c '
+    mount -o remount,bind,ro / && mount -t tmpfs -o size="$1" tmpfs /tmp || exit 99
+    if [ "$2" = full ]; then head -c 1048576 /dev/zero > /tmp/fill 2>/dev/null; fi
+    bashtion-pack; rc=$?
+    ls -A /tmp | grep -vx fill >&3
+    exit $rc' sh "$@"
+}
+
+echo "==> #70 pack writes nothing to / (a save must work on a full disk)"
+printf 'baseline\n' > /etc/bashtion-70-gone
+bashtion-baseline >/dev/null
+rm -f /etc/bashtion-70-gone
+echo canary-70 > /home/user/marker-70.txt
+rm -f /var/lib/bashtion/session.json   # the image no longer ships one either
+rc=0; pack_in_ns 8m room > /tmp/ro.tgz 2> /tmp/ro.err 3> /tmp/ro.left || rc=$?
+sed 's/^/     /' /tmp/ro.err
+ck "#70 test setup: a private read-only root (rc=$rc)" "[ $rc != 99 ]"
+ck "#70 pack succeeds with nowhere to write but /tmp" "[ $rc = 0 ] && test -s /tmp/ro.tgz"
+ck "#70 pack did not write session.json in place"      "! test -e /var/lib/bashtion/session.json"
+ck "#70 its staging directory is gone afterwards"       "! test -s /tmp/ro.left"
+ck "#70 session.json is archived where unpack reads it" "tar tzf /tmp/ro.tgz | grep -qx var/lib/bashtion/session.json"
+ck "#70 the staging path does not leak into the archive" "! tar tzf /tmp/ro.tgz | grep -q '^tmp/'"
+
+echo "==> #70 ...and that archive restores, deletion list and all"
+printf 'baseline\n' > /etc/bashtion-70-gone
+rm -f /home/user/marker-70.txt
+rc=0; bashtion-unpack < /tmp/ro.tgz > /tmp/ro-unpack.err 2>&1 || rc=$?
+sed 's/^/     /' /tmp/ro-unpack.err
+ck "#70 unpack accepts it"                       "[ $rc = 0 ]"
+ck "#70 a home file saved read-only comes back"  "grep -qx canary-70 /home/user/marker-70.txt"
+ck "#70 its deletion list replays"               "! test -e /etc/bashtion-70-gone"
+ck "#70 unpack puts session.json back in place"  "grep -q bashtion-70-gone /var/lib/bashtion/session.json"
+
+echo "==> #70 ...and when even /tmp is full, it fails in one clean line"
+rc=0; pack_in_ns 4k full > /tmp/nospace.tgz 2> /tmp/nospace.err 3> /tmp/nospace.left || rc=$?
+sed 's/^/     /' /tmp/nospace.err
+ck "#70 test setup: a private read-only root (rc=$rc)" "[ $rc != 99 ]"
+ck "#70 pack reports the failure"                "[ $rc != 0 ]"
+ck "#70 the reason is pack's own last line"      "tail -1 /tmp/nospace.err | grep -q '^bashtion-pack: .*No space left on device'"
+ck "#70 not a traceback"                         "! grep -q Traceback /tmp/nospace.err"
+ck "#70 no archive was emitted"                  "! test -s /tmp/nospace.tgz"
+ck "#70 nothing is left behind in /tmp"          "! test -s /tmp/nospace.left"
 
 exit $fail

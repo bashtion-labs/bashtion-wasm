@@ -529,6 +529,14 @@ RUN set -e; \
       { echo "FATAL: pack did not include a home file"; exit 1; }; \
     tar tzf /rootfs/tmp/probe.tgz | grep -q '^home/user/share/' || \
       { echo "FATAL: pack excluded the share directory"; exit 1; }; \
+    tar tzf /rootfs/tmp/probe.tgz | grep -qx 'var/lib/bashtion/session.json' || \
+      { echo "FATAL: pack did not archive its session metadata"; exit 1; }; \
+    ! tar tzf /rootfs/tmp/probe.tgz | grep -q '^tmp/' || \
+      { echo "FATAL: pack archived its staging path"; exit 1; }; \
+    [ ! -e /rootfs/var/lib/bashtion/session.json ] || \
+      { echo "FATAL: pack wrote session.json to the root filesystem (#70)"; exit 1; }; \
+    ! ls -d /rootfs/tmp/bashtion-pack-* 2>/dev/null || \
+      { echo "FATAL: pack left its staging directory behind"; exit 1; }; \
     rm -f /rootfs/tmp/probe.tgz /rootfs/tmp/probe.err /rootfs/home/user/.bashtion-canary; \
     chroot /rootfs /usr/local/sbin/bashtion-baseline
 

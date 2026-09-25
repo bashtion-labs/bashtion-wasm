@@ -28,11 +28,14 @@ has to be repeated after a restore.
          state.py pack            write a .tar.gz of the session to stdout
          state.py unpack          read one from stdin and apply it
 """
+import atexit
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 
 HOME = '/home/user'
@@ -182,12 +185,30 @@ def cmd_pack():
     system, deleted = changed_system_paths(base)
     home = [p for p in walk(HOME) if not skip(p)]
 
-    os.makedirs(STATE_DIR, exist_ok=True)
-    with open(SESSION, 'w') as f:
-        json.dump({'format': FORMAT, 'created': int(time.time()),
-                   'roots': SYSTEM_ROOTS, 'home': HOME, 'deleted': deleted}, f)
+    # The metadata is staged in /tmp and renamed into var/lib/bashtion/ inside
+    # the archive, never written to the root filesystem. A save has to work on
+    # a full disk - that is exactly when someone most needs their work out -
+    # and /tmp is a tmpfs, with room when / has none. Writing SESSION in place
+    # only ever survived 100% because the image happened to ship a copy whose
+    # one block could be reused. mkdtemp, not a fixed name: this runs as root
+    # in a world-writable directory.
+    try:
+        stage = tempfile.mkdtemp(prefix='bashtion-pack-', dir='/tmp')
+        atexit.register(shutil.rmtree, stage, True)
+        staged = os.path.join(stage, 'session.json')
+        with open(staged, 'w') as f:
+            json.dump({'format': FORMAT, 'created': int(time.time()),
+                       'roots': SYSTEM_ROOTS, 'home': HOME, 'deleted': deleted}, f)
+    except OSError as e:
+        sys.exit('bashtion-pack: cannot stage the session metadata in /tmp: %s'
+                 % (e.strerror or e))
+    # tar knows the file only by where it really is, so rename it on the way
+    # in: an anchored match on this one path, every metacharacter escaped.
+    rename = 's,^%s$,%s,' % (
+        ''.join('\\' + c if c in '\\.[]*^$' else c for c in staged.lstrip('/')),
+        SESSION.lstrip('/'))
 
-    members = home + system + [SESSION]
+    members = home + system + [staged]
     bytes_total = 0
     for p in members:
         try:
@@ -216,7 +237,7 @@ def cmd_pack():
     tar = subprocess.Popen(
         ['tar', 'czf', '-', '--numeric-owner', '--acls',
          '--xattrs', '--xattrs-include=*', '--no-recursion',
-         '--ignore-failed-read',
+         '--ignore-failed-read', '--transform', rename,
          '-C', '/', '--null', '-T', '-'],
         stdin=subprocess.PIPE)
     tar.communicate(listing.encode())

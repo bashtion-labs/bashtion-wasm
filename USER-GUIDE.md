@@ -153,6 +153,11 @@ The progress bar is moving, so it is working. Everything has to travel through a
 connection between the page and the Linux system, so a lot of files take a while. If something
 really does go wrong, the window tells you — it does not just sit there.
 
+**It says "No space left on device."**
+The main disk is full. `df -h /` shows it. Delete big files you made and no longer need, and
+put large things on the spare disk `/dev/vdb` instead. **Download my work** still works while
+the disk is full, so you can save first.
+
 **It says "File size limit exceeded."**
 You asked for a file bigger than 4 GB, which is more than this machine has room for anywhere.
 Nothing was written: at most an empty file is left, which takes no space. Try a smaller

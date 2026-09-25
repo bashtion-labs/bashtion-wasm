@@ -4,10 +4,11 @@ supposed to be.
 
 Every check here exists because something shipped broken and nothing caught
 it: an empty offline apt index, no man pages, a root filesystem 95% full, a
-user outside adm, a half-configured network, a firewall that reported rules it
-had not loaded, and a clock running at 0.4x wall time. Build-time assertions
-cover the parts that are visible in the rootfs; these cover the parts that are
-only true once the kernel is running.
+failed fallocate that still filled it and a save that could not run once it
+had, a user outside adm, a half-configured network, a firewall that reported
+rules it had not loaded, and a clock running at 0.4x wall time. Build-time
+assertions cover the parts that are visible in the rootfs; these cover the
+parts that are only true once the kernel is running.
 
 The invocation mirrors snapshot/make-snapshot.sh, so this tests the machine
 that is actually shipped. Native TCG, not the wasm engine - it cannot prove
@@ -350,6 +351,43 @@ def run_checks(con):
     rc, out = capture(con, 'stty rows 43 cols 160; stty size')
     check('#60 the console accepts a window size', out.strip().endswith('43 160'), out)
     capture(con, 'stty rows 24 cols 80')
+
+    # ---- #70 a save works when / is 100% full -----------------------------
+    # LAST on purpose: this fills the root filesystem, and anything that ran
+    # after a failed cleanup would be measuring a full disk. pack used to write
+    # session.json to /var/lib/bashtion first, so on a full disk the save died
+    # with a traceback - survivable only when an earlier copy's block could be
+    # reused, which is why any such copy is removed first. The fill is the very
+    # partial fallocate the cap exists to stop, run with the cap lifted on the
+    # root side so the root reserve goes too. /tmp, where pack now stages its
+    # metadata and the page writes the archive, is a tmpfs and unaffected.
+    rc, out = capture(con, 'findmnt -no FSTYPE /tmp')
+    check('#70 /tmp is a tmpfs, so it has room when / has none',
+          out.strip() == 'tmpfs', out)
+    capture(con, 'sudo rm -f /var/lib/bashtion/session.json')
+    rc, out = capture(con, "echo \"was=$(df --output=avail -m / | tail -1 | tr -d ' ')\"; "
+                           "sudo bash -c 'ulimit -f unlimited; "
+                           "fallocate -l 10G /var/tmp/bashtion-70-fill' 2>&1; "
+                           "echo \"avail=$(df --output=avail -B1 / | tail -1 | tr -d ' ')\"", 600)
+    m = re.search(r'was=(\d+)', out)
+    was = int(m.group(1)) if m else -1
+    check('#70 / is full for the test (%d MiB were free)' % was, 'avail=0' in out.split(), out)
+    rc, out = capture(con, 'sudo /usr/local/sbin/bashtion-pack > /tmp/full.tgz 2>/tmp/full.err; '
+                           'echo "pack=$?"; tail -1 /tmp/full.err; '
+                           'echo "meta=$(tar tzf /tmp/full.tgz | grep -cx var/lib/bashtion/session.json)"; '
+                           'test -e /var/lib/bashtion/session.json && echo WROTE-IN-PLACE', 900)
+    check('#70 bashtion-pack succeeds with / at 100%', 'pack=0' in out.split(), out)
+    check('#70 ...its archive carries the session metadata', 'meta=1' in out.split(), out)
+    check('#70 ...and it wrote nothing to /', 'WROTE-IN-PLACE' not in out, out)
+    rc, out = capture(con, 'sudo rm -f /var/tmp/bashtion-70-fill; '
+                           'echo "avail=$(df --output=avail -m / | tail -1 | tr -d \' \')"', 300)
+    m = re.search(r'avail=(\d+)', out)
+    avail = int(m.group(1)) if m else -1
+    check('#70 the fill is cleaned up (%d MiB free again, %d before)' % (avail, was),
+          was > 0 and avail >= was - 1, out)
+    rc, out = capture(con, 'sudo /usr/local/sbin/bashtion-unpack < /tmp/full.tgz 2>&1; '
+                           'echo "unpack=$?"; rm -f /tmp/full.tgz /tmp/full.err', 600)
+    check('#70 the archive saved on a full disk restores', 'unpack=0' in out.split(), out)
 
 
 if __name__ == '__main__':

@@ -71,7 +71,17 @@ const SERIALFS = (() => {
   let busy = false;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  // strip OSC (incl. 26.04 shell-integration OSC 3008) + CSI before matching
+  // strip OSC (incl. 26.04 shell-integration OSC 3008) + CSI before matching.
+  //
+  // This reads the RAW mirror, not SERIALTAP's screen, on purpose (#69). Every
+  // question here is "has the guest printed X since offset N" - a marker, the
+  // payload, a fresh prompt after a command this code sent - and the raw
+  // record only ever grows, so an answer cannot be taken back. On a screen, a
+  // `clear` (tidy() sends one) could erase a match before it was seen, and the
+  // payload is far longer than any scrollback. The line editors' redraws that
+  // make the raw record misleading as text only ever touch the echo of typed
+  // input, and nothing here matches an echo: that is what splitting every
+  // marker across quotes is for (see the header).
   const clean = (x) => x
     .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '')
     .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');

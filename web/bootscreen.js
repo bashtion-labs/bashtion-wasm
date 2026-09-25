@@ -5,10 +5,6 @@
 
 const BOOTSCREEN = (() => {
   const TOWER = "    ___    ___    ___\n   |   |  |   |  |   |\n   |   |__|   |__|   |\n   |                 |\n   |   $_            |\n   |   ___________   |\n   |                 |\n   |_________________|\n  /                   \\\n /_____________________\\\n|_______________________|";
-  const stripANSI = (x) => x
-    .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '')
-    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
-
   let el, dots, revealed = false;
   function build() {
     el = document.createElement('div');
@@ -78,8 +74,15 @@ const BOOTSCREEN = (() => {
     try { window.__paste && window.__paste(handover()); } catch (e) {}
     const t0 = Date.now();
     const settle = setInterval(() => {
-      const since = stripANSI((window.__serial || '').slice(from));
-      const back = /[$#] ?$/m.test(since.slice(-200)) && since.indexOf('clear') !== -1;
+      // Back means the handover's `clear` has run and the shell is at its
+      // prompt again. Whether `clear` has run is a question about what arrived
+      // after `from`, so it is asked of the raw mirror: the erase `clear`
+      // prints, or the word in the echoed command line. Either will do, and
+      // the first is there for when readline's redraw at the right margin has
+      // split the second (#69). The prompt is asked of the screen.
+      const since = (window.__serial || '').slice(from);
+      const ran = /\x1b\[[0-9;]*J/.test(since) || SERIALTAP.strip(since).indexOf('clear') !== -1;
+      const back = ran && SERIALTAP.atPrompt(window);
       if (!back && Date.now() - t0 < 15000) return;
       clearInterval(settle);
       if (!el) return;
@@ -93,9 +96,11 @@ const BOOTSCREEN = (() => {
     const t0 = Date.now();
     let promptSince = 0;
     const iv = setInterval(() => {
-      const s = stripANSI(window.__serial || '');
-      const atPrompt = /(user@bashtion:[^\n]*[$#]|[$#]) ?$/m.test(s.slice(-400));
-      if (atPrompt) {
+      // The same question the page asks before injecting anything, asked the
+      // same way (SERIALTAP.atPrompt): reveal() is about to type the handover
+      // into this line, so a line that merely ends in `$` - a half-typed
+      // `echo $` - must not count.
+      if (SERIALTAP.atPrompt(window)) {
         if (!promptSince) promptSince = Date.now();
         if (Date.now() - promptSince > 1200) { clearInterval(iv); reveal(); }
       } else { promptSince = 0; }

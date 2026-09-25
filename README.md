@@ -117,9 +117,9 @@ be repeated after a restore. The UI says so at save time.
 baseline, and its deletion list is that image's file list, so it only means something on the
 same image. Each image carries a build id - the first line of
 `/usr/local/lib/bashtion/baseline.tsv`, a sha256 over every path the baseline covers with its
-contents, owner and extended attributes - and every archive records it in `session.json`
-(format 2). `bashtion-unpack` reads `session.json` out of the archive before extracting
-anything, then:
+contents, owner, extended attributes and hard links - and every archive records it in
+`session.json` (format 2). `bashtion-unpack` reads `session.json` out of the archive before
+extracting anything, then:
 
 - **same build** - restores everything, as above;
 - **a different build, or no build recorded** (every archive saved before format 2) - restores
@@ -138,8 +138,8 @@ never reads `format` or `build`. Every format-2 archive also carries
 `usr/lib/bashtion/archive-format-2`, a member outside every tree any `bashtion-unpack` has
 been allowed to write, so an older build - a tab left open across a deploy, or a rollback -
 refuses the whole archive before extracting anything, rather than applying a newer build's
-system files. `bashtion-pack` writes it back if it has been deleted; `bashtion-unpack` skips
-that member and never extracts it.
+system files. `bashtion-pack` writes it back if it has been deleted or replaced by something
+tar would not pack (a socket); `bashtion-unpack` skips that member and never extracts it.
 
 **How it travels.** The payload is fed to a command reading the tty directly (`head -c N`),
 never to a heredoc: readline echoes and redisplays every line typed at an interactive prompt

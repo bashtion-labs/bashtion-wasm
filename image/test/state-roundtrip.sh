@@ -109,6 +109,16 @@ ck "#72 ...and unpack never writes it"   "! test -e $MARKER"
 bashtion-pack > /tmp/remarked.tgz 2>/dev/null
 ck "#72 pack puts a deleted marker back"  "test -s $MARKER"
 ck "#72 ...and it is in the archive"      "tar tzf /tmp/remarked.tgz | grep -x ${MARKER#/}"
+# Nor one that has become a socket: the path exists, but tar packs nothing for
+# a socket - "socket ignored", and still exit 0.
+rm -f "$MARKER"
+python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$MARKER"
+bashtion-pack > /tmp/resocket.tgz 2>/dev/null
+ck "#72 pack replaces a marker that is a socket" "test -f $MARKER && test -s $MARKER"
+ck "#72 ...and it is in the archive, as a file" \
+   "tar tvzf /tmp/resocket.tgz | grep -E '^-.* ${MARKER#/}\$'"
+ck "#72 ...which a format-1 unpacker refuses" \
+   "! python3 /src/image/test/fixtures/state-format1.py unpack < /tmp/resocket.tgz"
 
 echo "==> archive stays small (only changed system files)"
 size=$(stat -c %s /tmp/session.tgz)
@@ -357,6 +367,25 @@ os.setxattr('/tmp/xa2', 'user.b', b'y')
 sys.exit(0 if state.fingerprint('/tmp/xa1') != state.fingerprint('/tmp/xa2') else 1)"
 }
 ck "#72 one xattr cannot pass for two"                "xattr_collision"
+# Three identical files, same second: all apart, then a linked to b, then a
+# linked to c. No path's own row or fingerprint changes along the way.
+hl() {  # hl [TARGET]: /etc/bashtion-hl-{a,b,c}, a hard-linked to TARGET if given
+  rm -f /etc/bashtion-hl-a /etc/bashtion-hl-b /etc/bashtion-hl-c
+  for f in a b c; do
+    printf 'same\n' > /etc/bashtion-hl-$f && touch -d @1700000000 /etc/bashtion-hl-$f
+  done
+  [ -z "${1:-}" ] || ln -f /etc/bashtion-hl-a "/etc/bashtion-hl-$1"
+  bashtion-baseline >/dev/null
+  bid; rows > "/tmp/rows-hl${1:-}"
+}
+d=$(hl); e=$(hl b); f=$(hl c)
+ck "#72 (the baseline's own rows cannot tell hard links apart)" \
+   "cmp -s /tmp/rows-hl /tmp/rows-hlb && cmp -s /tmp/rows-hlb /tmp/rows-hlc"
+ck "#72 a rebuild that only hard-links two files changes the id" "[ -n \"$d\" ] && [ $d != $e ]"
+ck "#72 ...and so does linking a different pair"      "[ -n \"$f\" ] && [ $e != $f ] && [ $d != $f ]"
+ck "#72 ...while the same links, made afresh, give the same id" "[ \"\$(hl c)\" = $f ]"
+ck "#72 ...in whatever order the paths come"          "order_free"
+rm -f /etc/bashtion-hl-a /etc/bashtion-hl-b /etc/bashtion-hl-c
 
 echo "==> #72 a format-1 unpacker - every build before #72 - refuses a format-2 archive"
 # image/test/fixtures/state-format1.py is that unpacker, byte for byte: it

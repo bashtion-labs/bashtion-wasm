@@ -42,6 +42,7 @@ import stat
 import struct
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
 
@@ -194,15 +195,28 @@ def identity(rows):
     enough: size, mode and whole-second mtime are what pack needs to spot a
     change cheaply, but a rebuild can change what a file says without changing
     any of them. So each path's contents (or link target), type, owner and
-    extended attributes - ACLs included - go in too. It runs once per build,
-    where reading every file costs seconds, never per save.
+    extended attributes - ACLs included - go in too, and which other paths it
+    is hard-linked to: tar packs and restores that too, so two trees that
+    differ only there are not the same tree. It runs once per build, where
+    reading every file costs seconds, never per save.
 
     Taken in sorted order, so it does not depend on the order a filesystem
-    happens to list a directory in.
+    happens to list a directory in. A hard-link group is named by its first
+    path in that order, never by an inode number, which a rebuild does not keep.
     """
+    rows = sorted(rows)
+    first = {}                    # (dev, inode) -> the first path linked to it
+    group = {}                    # path -> that first path
+    for p, _ in rows:
+        try:
+            st = os.lstat(p)
+        except OSError:
+            continue
+        if not stat.S_ISDIR(st.st_mode) and st.st_nlink > 1:
+            group[p] = first.setdefault((st.st_dev, st.st_ino), p)
     h = hashlib.sha256()
-    for p, st in sorted(rows):
-        h.update(('%s\t%s\t%s\n' % (p, st, fingerprint(p)))
+    for p, st in rows:
+        h.update(('%s\t%s\t%s\t%s\n' % (p, st, fingerprint(p), group.get(p, p)))
                  .encode('utf-8', 'surrogateescape'))
     return h.hexdigest()
 
@@ -309,18 +323,35 @@ def changed_system_paths(base):
 def ensure_marker():
     """Put MARKER back if it has gone, so no archive goes out without it.
 
-    tar is told to skip what it cannot read, so a missing marker would drop
-    out of the archive silently. Failing to write it is reported, but never
-    stops a save: losing the work is worse than an archive an old build
-    would accept.
+    tar is told to skip what it cannot read, and skips a socket without being
+    told, so a marker that is missing - or has become a socket - would drop
+    out of the archive silently. So anything but a regular file is replaced,
+    by a rename, which never leaves the path empty and never writes through
+    whatever is there. A directory cannot be renamed over, but tar packs one
+    under the marker's name all the same, and the name is all an old
+    unpacker reads. Failing to write it is reported, but never stops a save:
+    losing the work is worse than an archive an old build would accept.
     """
-    if os.path.lexists(MARKER):
-        return
+    try:
+        mode = os.lstat(MARKER).st_mode
+        if stat.S_ISREG(mode) or stat.S_ISDIR(mode):
+            return
+    except OSError:
+        pass
+    tmp = None
     try:
         os.makedirs(os.path.dirname(MARKER), exist_ok=True)
-        with open(MARKER, 'w') as f:
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(MARKER), prefix='.marker.')
+        with os.fdopen(fd, 'w') as f:
+            os.fchmod(f.fileno(), 0o644)
             f.write(MARKER_TEXT)
+        os.replace(tmp, MARKER)
     except OSError as e:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
         print('bashtion-pack: cannot write %s (%s); a bashtion from before '
               'format 2 would not refuse this archive' % (MARKER, e.strerror),
               file=sys.stderr)

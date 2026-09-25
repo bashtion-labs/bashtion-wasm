@@ -48,10 +48,11 @@ HOME = '/home/user'
 SYSTEM_ROOTS = ['/etc', '/opt', '/srv', '/usr/local', '/root', '/var/spool/cron']
 STATE_DIR = '/var/lib/bashtion'
 BASELINE = '/usr/local/lib/bashtion/baseline.tsv'
-BUILD_ID = '/usr/local/lib/bashtion/build-id'
+# The first line of BASELINE: ID_TAG, a tab, and this build's id.
+ID_TAG = '#build'
 SESSION = STATE_DIR + '/session.json'
 # 1: format, created, roots, home, deleted.
-# 2: adds build, the BUILD_ID of the image that saved it.
+# 2: adds build, the build id of the image that saved it.
 FORMAT = 2
 
 # Machine identity and things regenerated on every boot: restoring these onto a
@@ -62,7 +63,7 @@ SKIP_EXACT = {
     '/usr/local/lib/bashtion',
 }
 SKIP_PREFIX = (
-    '/usr/local/lib/bashtion/',   # the helpers, this baseline, the build id
+    '/usr/local/lib/bashtion/',   # the helpers themselves, and this baseline
     '/etc/ssh/ssh_host_',         # host keys, generated on first boot
 )
 
@@ -146,46 +147,80 @@ def stamp(path):
 
 def cmd_baseline():
     os.makedirs(os.path.dirname(BASELINE), exist_ok=True)
-    n = 0
+    rows = []
+    for root in SYSTEM_ROOTS:
+        for p in walk(root):
+            if skip(p):
+                continue
+            try:
+                rows.append((p, stamp(p)))
+            except OSError:
+                continue
+    ident = identity(rows)
     tmp = BASELINE + '.tmp'
     with open(tmp, 'w') as f:
-        for root in SYSTEM_ROOTS:
-            for p in walk(root):
-                if skip(p):
-                    continue
-                try:
-                    f.write('%s\t%s\n' % (p, stamp(p)))
-                except OSError:
-                    continue
-                n += 1
+        # The build id heads the very file it describes, so one rename
+        # replaces both: a save can never pair this baseline with another
+        # baseline's id. read_baseline() knows to skip it.
+        f.write('%s\t%s\n' % (ID_TAG, ident))
+        for p, st in rows:
+            f.write('%s\t%s\n' % (p, st))
     os.replace(tmp, BASELINE)
-    print('baseline: %d paths, build %s' % (n, stamp_build_id()))
+    print('baseline: %d paths, build %s' % (len(rows), ident))
 
 
-def stamp_build_id():
-    """Name this build after its baseline, and write the name down.
+def identity(rows):
+    """Name the build after everything an archive is a diff against.
 
-    The baseline is already a per-build fingerprint of exactly the trees an
-    archive carries: every path under the system roots, with its size, mode
-    and mtime. Any build step that writes one of those files - a package
-    unpacked from a newer snapshot, a Dockerfile edit to /etc - writes it with
-    that build's clock, so a rebuild that changes anything under the system
-    roots changes the baseline, and one build always has the same one.
+    The system half of an archive only applies to the tree it was diffed
+    from, so this is what a restore compares. The baseline rows alone are not
+    enough: size, mode and whole-second mtime are what pack needs to spot a
+    change cheaply, but a rebuild can change what a file says without changing
+    any of them. So each path's contents (or link target), type, owner and
+    extended attributes - ACLs included - go in too. It runs once per build,
+    where reading every file costs seconds, never per save.
 
-    Written by the same command that writes the baseline, so the two cannot
-    drift: re-running bashtion-baseline in a session changes what later saves
-    are a diff against, and it changes the name they carry with it.
+    Taken in sorted order, so it does not depend on the order a filesystem
+    happens to list a directory in.
     """
     h = hashlib.sha256()
-    with open(BASELINE, 'rb') as f:
-        for chunk in iter(lambda: f.read(1 << 16), b''):
-            h.update(chunk)
-    ident = h.hexdigest()
-    tmp = BUILD_ID + '.tmp'
-    with open(tmp, 'w') as f:
-        f.write(ident + '\n')
-    os.replace(tmp, BUILD_ID)
-    return ident
+    for p, st in sorted(rows):
+        h.update(('%s\t%s\t%s\n' % (p, st, fingerprint(p)))
+                 .encode('utf-8', 'surrogateescape'))
+    return h.hexdigest()
+
+
+def fingerprint(path):
+    """Type, owner, contents or link target, and xattrs of one path."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return 'gone'
+    h = hashlib.sha256()
+    try:
+        if stat.S_ISLNK(st.st_mode):
+            h.update(os.fsencode(os.readlink(path)))
+        elif stat.S_ISREG(st.st_mode):
+            # NOFOLLOW/NONBLOCK: whatever it has become since the lstat - a
+            # symlink, a fifo - is read as nothing rather than followed or
+            # waited on.
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, 'rb') as f:
+                for chunk in iter(lambda: f.read(1 << 16), b''):
+                    h.update(chunk)
+    except OSError as e:
+        h.update(('unreadable %s' % e.errno).encode())
+    try:
+        names = sorted(os.listxattr(path, follow_symlinks=False))
+    except OSError:
+        names = []
+    for name in names:
+        try:
+            value = os.getxattr(path, name, follow_symlinks=False)
+        except OSError:
+            value = b''
+        h.update(b'\0' + os.fsencode(name) + b'=' + value)
+    return '%o %d %d %s' % (st.st_mode, st.st_uid, st.st_gid, h.hexdigest())
 
 
 def valid_id(ident):
@@ -193,27 +228,39 @@ def valid_id(ident):
             and all(c in '0123456789abcdef' for c in ident))
 
 
+def header_id(line):
+    tag, _, ident = line.rstrip('\n').partition('\t')
+    return ident if tag == ID_TAG and valid_id(ident) else None
+
+
 def build_id():
-    """This image's build identity, or None if it has none."""
+    """This image's build id, or None if its baseline carries none."""
     try:
-        with open(BUILD_ID) as f:
-            ident = f.read().strip()
+        with open(BASELINE) as f:
+            return header_id(f.readline())
     except OSError:
         return None
-    return ident if valid_id(ident) else None
 
 
 def read_baseline():
-    base = {}
+    """The baseline, and the build id at its head, read in one go.
+
+    Taken from the same bytes, so a save records the id of exactly the
+    baseline its diff was computed against.
+    """
+    base, ident = {}, None
     try:
         with open(BASELINE) as f:
-            for line in f:
+            for i, line in enumerate(f):
+                if i == 0 and line.startswith(ID_TAG + '\t'):
+                    ident = header_id(line)
+                    continue
                 parts = line.rstrip('\n').split('\t')
                 if len(parts) == 4:
                     base[parts[0]] = (parts[1], parts[2], parts[3])
     except OSError:
         pass
-    return base
+    return base, ident
 
 
 def changed_system_paths(base):
@@ -235,7 +282,7 @@ def changed_system_paths(base):
 
 
 def cmd_pack():
-    base = read_baseline()
+    base, build = read_baseline()
     if not base:
         print('bashtion-pack: no baseline; capturing the system roots in full',
               file=sys.stderr)
@@ -246,7 +293,7 @@ def cmd_pack():
     with open(SESSION, 'w') as f:
         json.dump({'format': FORMAT, 'created': int(time.time()),
                    'roots': SYSTEM_ROOTS, 'home': HOME, 'deleted': deleted,
-                   'build': build_id()}, f)
+                   'build': build}, f)
 
     members = home + system + [SESSION]
     bytes_total = 0
@@ -306,10 +353,13 @@ def read_meta(data, names):
     if len(names) > 1:
         sys.exit('bashtion-unpack: this archive carries more than one '
                  'session.json; nothing was restored')
-    got = subprocess.run(['tar', 'xzf', '-', '-O', '--', names[0]],
+    # Exactly that member and nothing under it: named as a directory, tar
+    # would otherwise hand back whatever file sits inside and call it this.
+    # A directory, link or symlink yields no bytes, and so is unreadable.
+    got = subprocess.run(['tar', 'xzf', '-', '-O', '--no-recursion', '--', names[0]],
                          input=data, capture_output=True)
     meta = None
-    if got.returncode == 0:
+    if got.returncode == 0 and not names[0].endswith('/'):
         try:
             meta = json.loads(got.stdout.decode('utf-8'))
         except ValueError:
@@ -367,20 +417,29 @@ def cmd_unpack():
     sessions = []                 # session.json, as the listing spells it
     home = set()                  # the home tree, once per spelling of its ./
     for name in listed.stdout.decode('utf-8', 'replace').splitlines():
-        n = name.lstrip('./')
-        if not n:
+        # A leading ./ is only a way of spelling a name, and is dropped. Any
+        # other way of making one non-canonical - a .., a ., a //, a leading
+        # / - is refused: `.../home/user/x` is not under /home/user, and
+        # `var/lib/bashtion/./session.json` must not be a second session.json
+        # that the checks below never see.
+        n = name
+        while n.startswith('./'):
+            n = n[2:]
+        if n in ('', '.'):
             continue
-        if n.startswith('/') or '..' in n.split('/'):
+        key = n.rstrip('/')
+        if (n.startswith('/') or '..' in key.split('/')
+                or os.path.normpath(key) != key):
             sys.exit('bashtion-unpack: refusing path %r' % name)
-        if not (n + '/').startswith(ALLOWED):
+        if not (key + '/').startswith(ALLOWED):
             sys.exit('bashtion-unpack: refusing path outside the session: %r' % name)
-        members.add(n.rstrip('/'))
-        if n.rstrip('/') == SESSION_REL:
+        members.add(key)
+        if key == SESSION_REL:
             sessions.append(name)
         # tar selects members by exact name, `./home/user` and `home/user`
         # being different ones, and the listing escapes unusual characters -
         # so select the home tree by its root, spelled as this archive does.
-        if in_home(n):
+        if in_home(key):
             home.add(name[:len(name) - len(n)] + HOME_REL)
 
     # The system half of an archive is a diff from the image that saved it,

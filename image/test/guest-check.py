@@ -284,15 +284,12 @@ def run_checks(con):
 
     # ---- #72 an archive names the build it was saved on -------------------
     # A restore applies the system half only to that same build, so the image
-    # has to carry an id, the id has to describe the baseline it ships with
-    # (the one every save is a diff from), and pack has to record exactly it.
-    rc, stamp = capture(con, 'cat /usr/local/lib/bashtion/build-id')
-    stamp = stamp.strip()
-    check('#72 the image carries a build id',
-          re.fullmatch(r'[0-9a-f]{64}', stamp) is not None, stamp)
-    rc, out = capture(con, 'sha256sum < /usr/local/lib/bashtion/baseline.tsv')
-    check('#72 the build id is the digest of the shipped baseline',
-          out.split()[:1] == [stamp], out)
+    # has to carry an id - at the head of the baseline every save is a diff
+    # from - and pack has to record exactly it.
+    rc, out = capture(con, 'head -1 /usr/local/lib/bashtion/baseline.tsv')
+    m = re.fullmatch(r'#build\s+([0-9a-f]{64})', out.strip())
+    stamp = m.group(1) if m else ''
+    check('#72 the image carries a build id', m is not None, out)
     rc, out = capture(con, "tar xzOf /tmp/probe.tgz var/lib/bashtion/session.json | python3 -c "
                            "'import json,sys; m=json.load(sys.stdin); "
                            "print(\"FORMAT=%s BUILD=%s\" % (m.get(\"format\"), m.get(\"build\")))'")

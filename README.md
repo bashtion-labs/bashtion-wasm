@@ -115,9 +115,11 @@ be repeated after a restore. The UI says so at save time.
 
 **An archive is tied to the build that saved it.** Its system half is a diff from that image's
 baseline, and its deletion list is that image's file list, so it only means something on the
-same image. Each image carries a build id (`/usr/local/lib/bashtion/build-id`, the sha256 of
-the baseline it ships with) and every archive records it in `session.json` (format 2).
-`bashtion-unpack` reads `session.json` out of the archive before extracting anything, then:
+same image. Each image carries a build id - the first line of
+`/usr/local/lib/bashtion/baseline.tsv`, a sha256 over every path the baseline covers with its
+contents, owner and extended attributes - and every archive records it in `session.json`
+(format 2). `bashtion-unpack` reads `session.json` out of the archive before extracting
+anything, then:
 
 - **same build** - restores everything, as above;
 - **a different build, or no build recorded** (every archive saved before format 2) - restores
@@ -125,8 +127,8 @@ the baseline it ships with) and every archive records it in `session.json` (form
   would otherwise silently revert whatever the newer image changed in the same files. It
   prints a warning naming both builds, and the page reports "Only your home folder was
   restored" rather than a plain success;
-- **a format newer than it understands, or an unreadable `session.json`** - refuses, having
-  written nothing.
+- **a format newer than it understands, or a `session.json` it cannot read** (not valid JSON,
+  not a regular file, present twice) - refuses, having written nothing.
 
 So after the guest image is rebuilt and redeployed, work saved before the update comes back
 home-only, and system changes have to be made again.
@@ -159,8 +161,9 @@ you see only "Saving your work..." and a completion tick, never a wall of base64
   The guest is configured to be *coherently* offline rather than half-configured:
   `systemd-resolved` is masked, `/etc/resolv.conf` and `/etc/netplan/` say why they are empty,
   and `/etc/motd` states it at the start of every session.
-- **Installed packages do not survive a save.** Everything else about a session does; see
-  "Saving work" for what travels and why the rest cannot.
+- **Installed packages do not survive a save.** Everything else about a session does, restored
+  onto the same build of the image; onto a different build only the home directory comes back.
+  See "Saving work" for what travels and why the rest cannot.
 - **Boot is slow, restore is fast.** A cold systemd boot under emulation takes minutes; the
   snapshot-restore path is why a real session starts in seconds. Development boots (building a
   fresh snapshot) still pay the full cost.

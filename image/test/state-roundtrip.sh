@@ -28,6 +28,16 @@ done
 
 fail=0
 ck() { if eval "$2" >/dev/null 2>&1; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
+# this build's id: the first line of the baseline is "#build<TAB><id>"
+bid() { head -1 /usr/local/lib/bashtion/baseline.tsv | sed -n 's/^#build\t\([0-9a-f]\{64\}\)$/\1/p'; }
+# a field of the session.json inside an archive
+meta() { tar xzOf "$1" var/lib/bashtion/session.json | python3 -c "import json,sys; print(json.load(sys.stdin).get('$2'))"; }
+# the id state.py computes for the tree as it is now, from the baseline's rows
+recompute() {
+  python3 -B -c "import sys; sys.path.insert(0, '/usr/local/lib/bashtion'); import state
+base, _ = state.read_baseline()
+print(state.identity([(p, chr(9).join(v)) for p, v in base.items()]))"
+}
 
 # match the guest: uid 1000 is `user`
 userdel -r ubuntu >/dev/null 2>&1 || true
@@ -38,6 +48,8 @@ printf 'original\n' > /etc/bashtion-config
 
 echo "==> baseline"
 bashtion-baseline
+ck "#72 the baseline carries a build id"          "[ -n \"\$(bid)\" ]"
+ck "#72 ...which describes the tree it was taken of" "[ \"\$(recompute)\" = \"\$(bid)\" ]"
 
 echo "==> make a session's worth of change"
 echo canary-home   > /home/user/marker.txt
@@ -82,11 +94,7 @@ ck "#50 deletion re-applied"           "! test -e /etc/bashtion-will-be-deleted"
 ck "#50 home ownership preserved"      "[ \"\$(stat -c %U /home/user/marker.txt)\" = user ]"
 ck "#50 cron job mode preserved"       "[ \"\$(stat -c %a /var/spool/cron/crontabs/user)\" = 600 ]"
 
-BID=/usr/local/lib/bashtion/build-id
-meta() { tar xzOf "$1" var/lib/bashtion/session.json | python3 -c "import json,sys; print(json.load(sys.stdin).get('$2'))"; }
-ck "#72 baseline stamps a build id: the digest of the baseline" \
-   "[ \"\$(cat $BID)\" = \"\$(sha256sum < /usr/local/lib/bashtion/baseline.tsv | cut -d' ' -f1)\" ]"
-ck "#72 pack records this build's id"    "[ \"\$(meta /tmp/session.tgz build)\" = \"\$(cat $BID)\" ]"
+ck "#72 pack records this build's id"    "[ \"\$(meta /tmp/session.tgz build)\" = \"\$(bid)\" ]"
 ck "#72 ...in the format that has one"   "[ \"\$(meta /tmp/session.tgz format)\" = 2 ]"
 ck "#72 a same-build archive restores in full" \
    "tail -1 /tmp/full.out | grep -q '^bashtion-unpack: restored; '"
@@ -112,7 +120,7 @@ echo harmless > /tmp/eviltree/home/user/harmless
 # It claims THIS build, or the list would never be replayed at all (#72) and
 # the containment below would go untested.
 cat > /tmp/eviltree/var/lib/bashtion/session.json <<JSON
-{"format":2,"build":"$(cat $BID)","created":0,"deleted":[
+{"format":2,"build":"$(bid)","created":0,"deleted":[
   "/etc/../usr/bin/bashtion-sentinel",
   "/etc/../usr/local/lib/bashtion/state.py",
   "/etc/../../home/user/keep-me.txt",
@@ -142,7 +150,7 @@ ck "the directory is gone, not an empty skeleton" "! test -e /opt/pkg"
 echo "==> an archive with no deletion list does not replay a stale one"
 # The session.json left on disk by an earlier restore lists a file that exists.
 # An archive that carries no list of its own must not pick that one up.
-printf '{"format":2,"build":"%s","deleted":["/etc/bashtion-stale"]}' "$(cat $BID)" \
+printf '{"format":2,"build":"%s","deleted":["/etc/bashtion-stale"]}' "$(bid)" \
   > /var/lib/bashtion/session.json
 printf 'still here\n' > /etc/bashtion-stale
 mkdir -p /tmp/plain/home/user && printf 'restored\n' > /tmp/plain/home/user/plain.txt
@@ -181,7 +189,7 @@ echo "==> #72 an archive from an older build restores home only"
 printf 'shipped-in-v1\n' > /etc/bashtion-fixed
 printf 'shipped-in-v1\n' > /etc/bashtion-dropped
 bashtion-baseline
-v1=$(cat $BID)
+v1=$(bid)
 echo 'stale-edit' >> /etc/bashtion-fixed
 rm -f /etc/bashtion-dropped
 echo home-v1  > /home/user/v1.txt
@@ -198,7 +206,7 @@ rm -f /home/user/v1.txt /home/user/share/v1.txt
 printf 'fixed-in-v2\n' > /etc/bashtion-fixed
 printf 'needed-in-v2\n' > /etc/bashtion-dropped
 bashtion-baseline
-v2=$(cat $BID)
+v2=$(bid)
 ck "#72 a rebuild that changes a system file changes the build id" "[ $v1 != $v2 ]"
 unpack /tmp/v1.tgz /tmp/v1.out
 ck "#72 the restore succeeds"                         "[ $rc = 0 ]"
@@ -246,13 +254,13 @@ ck "#72 a ./-spelled archive restores its home file"  "[ $rc = 0 ] && grep -qx d
 ck "#72 ...and still not its system file"             "! test -e /etc/bashtion-dotted"
 
 echo "==> #72 an archive this build cannot read is refused, and nothing is written"
-refused() {  # refused NAME ARCHIVE: the unpack fails and writes nothing at all
+refused() {  # refused NAME ARCHIVE [SAYS]: the unpack fails and writes nothing at all
   rm -f /home/user/legacy.txt
   printf 'fixed-in-v2\n' > /etc/bashtion-fixed
   printf '{"marker":"untouched"}' > /var/lib/bashtion/session.json
   unpack "$2" /tmp/refused.out
   ck "#72 $1: refused"                                "[ $rc != 0 ]"
-  ck "#72 $1: says nothing was restored"              "tail -1 /tmp/refused.out | grep -q 'nothing was restored'"
+  ck "#72 $1: says ${3:-nothing was restored}"        "tail -1 /tmp/refused.out | grep -q '${3:-nothing was restored}'"
   ck "#72 $1: no home file written"                   "! test -e /home/user/legacy.txt"
   ck "#72 $1: no system file written"                 "[ \"\$(cat /etc/bashtion-fixed)\" = fixed-in-v2 ]"
   ck "#72 $1: session.json not written"               "grep -q untouched /var/lib/bashtion/session.json"
@@ -274,5 +282,58 @@ with tarfile.open('/tmp/v2.tgz') as i, tarfile.open('/tmp/garbled.tgz', 'w:gz') 
         o.addfile(m, f)
 PY
 refused "an unreadable session.json" /tmp/garbled.tgz
+
+# Archives spelled so that a name check which only strips leading dots and
+# slashes, or reads session.json recursively, would let them through.
+mktar() {  # mktar OUT NAME[=CONTENT] ...: members exactly as named; NAME/ is a directory
+  python3 - "$@" <<'PY'
+import io, sys, tarfile
+with tarfile.open(sys.argv[1], 'w:gz') as t:
+    for spec in sys.argv[2:]:
+        name, _, body = spec.partition('=')
+        i = tarfile.TarInfo(name.rstrip('/'))
+        i.uid = i.gid = 1000
+        if name.endswith('/'):
+            i.type, i.mode = tarfile.DIRTYPE, 0o755
+            t.addfile(i)
+        else:
+            b = body.encode()
+            i.size, i.mode = len(b), 0o644
+            t.addfile(i, io.BytesIO(b))
+PY
+}
+ok_meta="{\"format\":2,\"build\":\"$(bid)\"}"
+mktar /tmp/alias.tgz "var/lib/bashtion/session.json=$ok_meta" \
+      'var/lib/bashtion/./session.json={"format":3}' home/user/legacy.txt=alias
+refused "a second session.json spelled differently" /tmp/alias.tgz 'refusing path'
+mktar /tmp/sdir.tgz var/lib/bashtion/session.json/ \
+      "var/lib/bashtion/session.json/x.json=$ok_meta" home/user/legacy.txt=sdir
+refused "a session.json that is a directory" /tmp/sdir.tgz 'unreadable'
+mktar /tmp/dots.tgz .../home/user/legacy.txt=dots
+refused "a .../home/user spelling" /tmp/dots.tgz 'refusing path'
+ck "#72 a .../home/user spelling: nothing under /..." "! test -e /..."
+
+echo "==> #72 the build id sees what a file says, not only its size and mtime"
+rows() { tail -n +2 /usr/local/lib/bashtion/baseline.tsv; }
+printf 'allow=0\n' > /etc/bashtion-same && touch -d @1700000000 /etc/bashtion-same
+bashtion-baseline >/dev/null
+a=$(bid); rows > /tmp/rows-a
+printf 'allow=1\n' > /etc/bashtion-same && touch -d @1700000000 /etc/bashtion-same
+bashtion-baseline >/dev/null
+b=$(bid); rows > /tmp/rows-b
+ck "#72 (the baseline's own rows cannot tell those two apart)" "cmp -s /tmp/rows-a /tmp/rows-b"
+ck "#72 a rebuild that changes only what a file says changes the id" "[ -n \"$a\" ] && [ $a != $b ]"
+chown 1000:1000 /etc/bashtion-same
+bashtion-baseline >/dev/null
+c=$(bid); rows > /tmp/rows-c
+ck "#72 (...nor tell an owner change)"                "cmp -s /tmp/rows-b /tmp/rows-c"
+ck "#72 a rebuild that changes only an owner changes the id" "[ -n \"$c\" ] && [ $b != $c ]"
+order_free() {
+  python3 -B -c "import sys; sys.path.insert(0, '/usr/local/lib/bashtion'); import state
+base, ident = state.read_baseline()
+rows = [(p, chr(9).join(v)) for p, v in base.items()]
+sys.exit(0 if state.identity(rows) == state.identity(rows[::-1]) == ident else 1)"
+}
+ck "#72 the id does not depend on the order a directory is listed in" "order_free"
 
 exit $fail

@@ -89,8 +89,9 @@ pack:
 ##   gh run download -n qemu-engine -D /tmp/engine
 ##   gh run download -n snapshot-set -D /tmp/guest
 ## then: make site ENGINE=/tmp/engine GUEST=/tmp/guest R2TAG=v2
-## R2TAG versions the two R2-hosted bundles; bump it whenever their bytes
-## change, or caches will keep serving the old ones (see deploy/README.md).
+## R2TAG versions the snapshot-set bundles (the two on R2, and the lab disk);
+## bump it whenever their bytes change, or caches will keep serving the old
+## ones (see deploy/README.md).
 site:
 	@[ -n "$(ENGINE)" ] || { echo "usage: make site ENGINE=<qemu-engine dir> GUEST=<snapshot-set dir>"; exit 1; }
 	@[ -n "$(GUEST)" ]  || { echo "usage: make site ENGINE=<qemu-engine dir> GUEST=<snapshot-set dir>"; exit 1; }

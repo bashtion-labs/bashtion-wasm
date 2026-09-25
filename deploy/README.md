@@ -313,6 +313,10 @@ made it into the deploy.
   (the switch is atomic — nothing points at the new keys until the page does),
   then delete the old objects once traffic has moved. `pack-site.sh` refuses to
   finish if the page and `worker.js` do not name exactly the bundles it built.
+  The tag renames the small lab disk too (`load-lab.v3.data`): it is a static
+  asset, not an R2 object, but it belongs to the same matched set, and a fixed
+  name is how the 1 GiB disk would outlive the move to 4 GiB in browsers that
+  cached it as immutable. Nothing to upload for it - `load-lab.js` names it.
 
   The engine `.wasm` only changes when the engine does, and the fork build is
   reproducible, so it usually needs no re-upload at all. R2 objects are content-addressed by

@@ -1,7 +1,0 @@
-This member marks a bashtion session archive of format 2 or later.
-
-It sits outside every tree bashtion-unpack has ever been allowed to write,
-on purpose: an unpacker from before format 2 refuses the whole archive when
-it meets it, before extracting anything. Such an unpacker never checks which
-build an archive came from, and would otherwise apply this archive's system
-files to whatever build it runs on. A format-2 unpacker skips it.

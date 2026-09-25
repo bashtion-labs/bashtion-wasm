@@ -471,8 +471,9 @@ RUN set -e; \
     rm -f /rootfs/tmp/probe.tgz /rootfs/tmp/probe.err /rootfs/home/user/.bashtion-canary; \
     chroot /rootfs /usr/local/sbin/bashtion-baseline
 # Without a build id every archive this image saves restores home-only, even
-# onto this very image; without the format-2 marker (from seed/), an unpacker
-# from before #72 would apply them blind. Either fails the build, not the user.
+# onto this very image; without the format-2 marker (which pack writes when it
+# is missing, so the probe above left it), an unpacker from before #72 would
+# apply them blind. Either fails the build, not the user.
 RUN set -e; head=$(head -1 /rootfs/usr/local/lib/bashtion/baseline.tsv); \
     printf '%s\n' "$head" | grep -Eq '^#build[[:space:]][0-9a-f]{64}$' || \
       { echo "FATAL: baseline.tsv carries no build id (first line: $head)"; exit 1; }; \

@@ -55,13 +55,20 @@ SESSION = STATE_DIR + '/session.json'
 # 1: format, created, roots, home, deleted.
 # 2: adds build, the build id of the image that saved it, and MARKER.
 FORMAT = 2
-# Shipped in the image and added to every archive, outside every tree an
-# unpacker has ever been allowed to write. A format-1 unpacker never looks at
-# format or build and would apply this archive's system files to whatever
-# build it runs on - an old tab still open, a deploy rolled back - so instead
-# it meets this, refuses the whole archive, and writes nothing. Never
-# extracted here.
+# Added to every archive, outside every tree an unpacker has ever been
+# allowed to write. A format-1 unpacker never looks at format or build and
+# would apply this archive's system files to whatever build it runs on - an
+# old tab still open, a deploy rolled back - so instead it meets this,
+# refuses the whole archive, and writes nothing. Never extracted here.
 MARKER = '/usr/lib/bashtion/archive-format-2'
+MARKER_TEXT = '''This member marks a bashtion session archive of format 2 or later.
+
+It sits outside every tree bashtion-unpack has ever been allowed to write,
+on purpose: an unpacker from before format 2 refuses the whole archive when
+it meets it, before extracting anything. Such an unpacker never checks which
+build an archive came from, and would otherwise apply this archive's system
+files to whatever build it runs on. A format-2 unpacker skips it.
+'''
 
 # Machine identity and things regenerated on every boot: restoring these onto a
 # different session is wrong, not merely useless.
@@ -299,6 +306,26 @@ def changed_system_paths(base):
     return keep, deleted
 
 
+def ensure_marker():
+    """Put MARKER back if it has gone, so no archive goes out without it.
+
+    tar is told to skip what it cannot read, so a missing marker would drop
+    out of the archive silently. Failing to write it is reported, but never
+    stops a save: losing the work is worse than an archive an old build
+    would accept.
+    """
+    if os.path.lexists(MARKER):
+        return
+    try:
+        os.makedirs(os.path.dirname(MARKER), exist_ok=True)
+        with open(MARKER, 'w') as f:
+            f.write(MARKER_TEXT)
+    except OSError as e:
+        print('bashtion-pack: cannot write %s (%s); a bashtion from before '
+              'format 2 would not refuse this archive' % (MARKER, e.strerror),
+              file=sys.stderr)
+
+
 def cmd_pack():
     base, build = read_baseline()
     if not base:
@@ -313,6 +340,7 @@ def cmd_pack():
                    'roots': SYSTEM_ROOTS, 'home': HOME, 'deleted': deleted,
                    'build': build}, f)
 
+    ensure_marker()
     members = home + system + [SESSION, MARKER]
     bytes_total = 0
     for p in members:

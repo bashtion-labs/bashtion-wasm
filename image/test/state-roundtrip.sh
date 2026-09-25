@@ -25,8 +25,7 @@ install -D -m755 "$SEED/usr/local/lib/bashtion/state.py" /usr/local/lib/bashtion
 for f in pack unpack baseline; do
   install -D -m755 "$SEED/usr/local/sbin/bashtion-$f" "/usr/local/sbin/bashtion-$f"
 done
-MARKER=/usr/lib/bashtion/archive-format-2
-install -D -m644 "$SEED$MARKER" "$MARKER"
+MARKER=/usr/lib/bashtion/archive-format-2    # pack writes it when missing
 
 fail=0
 ck() { if eval "$2" >/dev/null 2>&1; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
@@ -80,7 +79,8 @@ printf 'baseline\n' > /etc/bashtion-will-be-deleted
 printf 'original\n' > /etc/bashtion-config
 
 echo "==> unpack"
-mv "$MARKER" /tmp/marker.aside          # so we can see whether unpack writes it
+# gone before the restore, so a marker afterwards could only have come from it
+rm -f "$MARKER"
 bashtion-unpack < /tmp/session.tgz 2>&1 | tee /tmp/full.out
 
 echo "==> check"
@@ -104,7 +104,11 @@ ck "#72 a same-build archive restores in full" \
 ck "#72 pack adds the marker a format-1 unpacker refuses" \
    "tar tzf /tmp/session.tgz | grep -x ${MARKER#/}"
 ck "#72 ...and unpack never writes it"   "! test -e $MARKER"
-mv /tmp/marker.aside "$MARKER"
+# ...and a deleted marker does not quietly drop out of the next archive: tar
+# skips what it cannot read, so pack has to put it back.
+bashtion-pack > /tmp/remarked.tgz 2>/dev/null
+ck "#72 pack puts a deleted marker back"  "test -s $MARKER"
+ck "#72 ...and it is in the archive"      "tar tzf /tmp/remarked.tgz | grep -x ${MARKER#/}"
 
 echo "==> archive stays small (only changed system files)"
 size=$(stat -c %s /tmp/session.tgz)

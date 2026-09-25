@@ -116,8 +116,15 @@ takes a moment and needs no internet.
 - **Installing programs.** You can install some programs with `sudo apt install`, but only the
   ones that were packed in ahead of time. It will not download new ones from the internet.
   Try `sudo apt install tree` to see it work.
-- **A spare disk.** There is a second, empty 1 GB disk called `/dev/vdb`. Use it for anything
-  large, and for practising with partitions and filesystems. The main disk is small.
+- **A spare disk.** There is a second, empty 4 GB disk called `/dev/vdb`. Use it for anything
+  large, and for practising with partitions and filesystems. The main disk is small:
+  `df -h /` shows how much room is left on it.
+- **A size limit on files.** One file can be at most 4 GB, the size of the spare disk. This is
+  on purpose. Without it, a command like `fallocate -l 10G big.img` fills the main disk right
+  up before it fails, and leaves a half-made file behind. With it, the command stops at once
+  with "File size limit exceeded" and uses no space. `ulimit -a` shows the limit, and
+  `ulimit -f unlimited` removes it for that terminal. A `sudo` command starts fresh with the
+  limit back on, so for admin work type `sudo -i` first, then `ulimit -f unlimited`.
 - **The window size.** The screen fits your browser window. If you make the window bigger, you
   get more room. `stty size` tells you how many rows and columns you have.
 - **It's your own computer.** Anything you do only affects your browser tab. You cannot break
@@ -145,6 +152,16 @@ seconds to finish.
 The progress bar is moving, so it is working. Everything has to travel through a slow
 connection between the page and the Linux system, so a lot of files take a while. If something
 really does go wrong, the window tells you — it does not just sit there.
+
+**It says "No space left on device."**
+The main disk is full. `df -h /` shows it. Delete big files you made and no longer need, and
+put large things on the spare disk `/dev/vdb` instead. **Download my work** still works while
+the disk is full, so you can save first.
+
+**It says "File size limit exceeded."**
+You asked for a file bigger than 4 GB, which is more than this machine has room for anywhere.
+Nothing was written: at most an empty file is left, which takes no space. Try a smaller
+size. (See "A size limit on files" above.)
 
 **The clock looks wrong.**
 It is set from your computer's clock when the session starts. If you leave the tab for a long

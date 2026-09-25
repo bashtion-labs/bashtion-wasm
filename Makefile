@@ -88,14 +88,20 @@ pack:
 ## Assemble a deployable htdocs from the two CI artifacts. Download them with
 ##   gh run download -n qemu-engine -D /tmp/engine
 ##   gh run download -n snapshot-set -D /tmp/guest
-## then: make site ENGINE=/tmp/engine GUEST=/tmp/guest R2TAG=v2
-## R2TAG versions the two R2-hosted bundles; bump it whenever their bytes
-## change, or caches will keep serving the old ones (see deploy/README.md).
+## then: make site ENGINE=/tmp/engine GUEST=/tmp/guest R2TAG=v3
+## R2TAG versions the snapshot-set bundles (the two on R2, and the lab disk);
+## bump it whenever their bytes change, or caches will keep serving the old
+## ones (see deploy/README.md). It must be the tag deploy/worker.js serves, and
+## that is bumped with the change itself - never re-upload under a live tag.
+## R2TAG is required: worker.js serves only versioned keys, so an untagged build
+## can never be deployed, and pack-site.sh would only say so after packaging.
+SITE_USAGE := usage: make site ENGINE=<qemu-engine dir> GUEST=<snapshot-set dir> R2TAG=<the tag deploy/worker.js serves>
 site:
-	@[ -n "$(ENGINE)" ] || { echo "usage: make site ENGINE=<qemu-engine dir> GUEST=<snapshot-set dir>"; exit 1; }
-	@[ -n "$(GUEST)" ]  || { echo "usage: make site ENGINE=<qemu-engine dir> GUEST=<snapshot-set dir>"; exit 1; }
+	@[ -n "$(ENGINE)" ] || { echo "$(SITE_USAGE)"; exit 1; }
+	@[ -n "$(GUEST)" ]  || { echo "$(SITE_USAGE)"; exit 1; }
+	@[ -n "$(R2TAG)" ]  || { echo "$(SITE_USAGE)"; exit 1; }
 	./scripts/pack-site.sh --engine "$(ENGINE)" --guest "$(GUEST)" --out $(OUT)/site \
-	  $(if $(R2TAG),--r2-tag $(R2TAG))
+	  --r2-tag "$(R2TAG)"
 	./deploy/split.sh $(OUT)/site
 
 ## Serve locally with the COOP/COEP headers cross-origin isolation requires.

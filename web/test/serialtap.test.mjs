@@ -300,3 +300,22 @@ test('OSC, DCS and the other strings are skipped whole, whichever way they end',
   assert.equal(at('\r\n' + ctx + 'user@bashtion:~$ \x1b]0;user@bashtion: ~\x07'), true);
   assert.deepEqual(screenOf('a\x1bPzz\x1b\\b\x1b_apc\x1b\\c'), ['abc']);
 });
+
+test('#69 BEL ends an OSC, but a DCS, SOS, PM or APC only at ST', () => {
+  // xterm's parser (the VT500 one) lets BEL end an OSC. The other control
+  // strings end only at ST: a BEL inside one is payload, and so is anything
+  // prompt-shaped after it - none of it reaches the screen.
+  const prompt = 'user@bashtion:~$ ';
+  for (const open of ['\x1bP+q', '\x1bX', '\x1b^', '\x1b_G', '\x90', '\x98']) {
+    const raw = 'output\r\r\n' + open + '6b63\x07' + prompt;
+    assert.equal(at(raw), false, JSON.stringify(open));
+    assert.equal(lastOf(raw), '', JSON.stringify(open));
+    // ST closes it, and the shell's prompt after that is real
+    for (const st of ['\x1b\\', '\x9c']) {
+      assert.equal(at(raw + st + prompt), true, JSON.stringify(open + st));
+      assert.equal(lastOf(raw + st + prompt), 'user@bashtion:~$', JSON.stringify(open + st));
+    }
+  }
+  assert.equal(at('output\r\r\n\x1b]2;title\x07' + prompt), true);
+  assert.equal(at('output\r\r\n\x9d2;title\x07' + prompt), true);
+});

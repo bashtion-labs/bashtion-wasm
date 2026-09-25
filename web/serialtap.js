@@ -78,7 +78,7 @@ const SERIALTAP = (() => {
   // (Unicode 6) provider implements; only the zero-width ranges that turn up
   // in practice are listed.
   const SCROLLBACK = 1000;
-  const GROUND = 0, ESC = 1, ESC_INTER = 2, CSI = 3, STR = 4, STR_ESC = 5;
+  const GROUND = 0, ESC = 1, ESC_INTER = 2, CSI = 3, OSC = 4, STR = 5, STR_ESC = 6;
 
   function width(c) {
     if (c < 0x0300) return 1;
@@ -340,7 +340,8 @@ const SERIALTAP = (() => {
       state = GROUND;
       switch (ch) {
         case '[': state = CSI; params = inter = ''; return;
-        case ']': case 'P': case 'X': case '^': case '_': state = STR; return;
+        case ']': state = OSC; return;
+        case 'P': case 'X': case '^': case '_': state = STR; return;
         case '7': save(); return;
         case '8': restore(); return;
         case 'D': lineFeed(); return;
@@ -359,12 +360,16 @@ const SERIALTAP = (() => {
           if (c >= 0x20 && c !== 0x7f && (c < 0x80 || c >= 0xa0)) print(ch, width(c));
           else if (c === 0x1b) state = ESC;
           else if (c === 0x9b) { state = CSI; params = inter = ''; }
-          else if (c === 0x90 || c === 0x9d || c === 0x98 || c === 0x9e || c === 0x9f) state = STR;
+          else if (c === 0x9d) state = OSC;
+          else if (c === 0x90 || c === 0x98 || c === 0x9e || c === 0x9f) state = STR;
           else control(c);
         } else if (c === 0x18 || c === 0x1a) {
           state = GROUND;                                 // CAN, SUB: abandon the sequence
-        } else if (state === STR) {                       // OSC, DCS, ...: skipped to BEL or ST
-          if (c === 0x07 || c === 0x9c) state = GROUND;
+        } else if (state === OSC || state === STR) {
+          // Skipped whole. BEL ends an OSC, but in a DCS, SOS, PM or APC it is
+          // payload: those end only at ST, and what follows a BEL in one is
+          // still not on the screen.
+          if (c === 0x9c || (c === 0x07 && state === OSC)) state = GROUND;
           else if (c === 0x1b) state = STR_ESC;
         } else if (state === STR_ESC) {
           if (ch === '\\') state = GROUND;

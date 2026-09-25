@@ -24,8 +24,15 @@ Then assemble locally:
 ```sh
 gh run download -n qemu-engine  -D /tmp/engine
 gh run download -n snapshot-set -D /tmp/guest
-make site ENGINE=/tmp/engine GUEST=/tmp/guest
+make site ENGINE=/tmp/engine GUEST=/tmp/guest R2TAG=v3
 ```
+
+`R2TAG` must be the tag `deploy/worker.js` serves — the `.v3` in its
+`R2_FILES` keys. The snapshot-set bundles are named by it
+(`load-rootfsB.v3.data`, `load-state.v3.data`, `load-lab.v3.data`), and
+`pack-site.sh` refuses a build whose names are not exactly what the Worker
+serves, so any other tag, or none, cannot be deployed. **Updating later**
+says when it moves.
 
 `make site` runs `scripts/pack-site.sh` (emscripten's `file_packager`, in a
 pinned emsdk container — it is pure Python, so it runs fine on Apple Silicon)
@@ -46,8 +53,8 @@ produces a VM that will not resume. `pack-site.sh` takes the right one.
 
 | File | Size | Where it goes |
 |------|------|---------------|
-| `load-rootfsB.data` (the Ubuntu disk) | ~1.0 GB | **R2** |
-| `load-state.data` (the saved running state) | ~300 MiB | **R2** |
+| `load-rootfsB.v3.data` (the Ubuntu disk) | ~1.0 GB | **R2** |
+| `load-state.v3.data` (the saved running state) | ~300 MiB | **R2** |
 | `qemu-system-x86_64.wasm` (the engine) | ~39 MiB | **R2** |
 | the page, JS, `load-kernel.data` (17 MiB), ROM, lab disk, `vendor/` | each < 25 MiB | **Static Assets** |
 
@@ -64,9 +71,9 @@ sidesteps all cross-origin (CORS/CORP) complexity.
 
 ```
 browser ──▶ https://lab.bashtion.dev
-             ├─ /  /*.js  /vendor/*  /load-kernel.data …  ─▶ Static Assets (public/)
-             └─ /qemu-system-x86_64.wasm                   ─▶ worker.js ─▶ private R2
-                /load-rootfsB.data  /load-state.data           (bucket binding)
+             ├─ /  /*.js  /vendor/*  /load-kernel.data …        ─▶ Static Assets (public/)
+             └─ /qemu-system-x86_64.wasm                         ─▶ worker.js ─▶ private R2
+                /load-rootfsB.v3.data  /load-state.v3.data           (bucket binding)
 ```
 
 ### Does it fit the free tier?
@@ -87,10 +94,10 @@ Yes, comfortably.
 
 ## Caching
 
-`worker.js` stores each full GET of `qemu-system-x86_64.wasm` and `load-state.data`
+`worker.js` stores each full GET of `qemu-system-x86_64.wasm` and `load-state.v3.data`
 in Cloudflare's edge cache (they are immutable), so a second visitor in the same
 region gets them straight from cache — no Worker invocation, no R2 read. The
-~1038 MiB `load-rootfsB.data` is intentionally **not** cached: it is above the
+~1038 MiB `load-rootfsB.v3.data` is intentionally **not** cached: it is above the
 free-plan max cacheable object size, and skipping it avoids streaming a huge body
 through the Worker's 128 MiB memory (it still serves fine from R2, and egress is
 free). Ranged requests bypass the cache and read R2 directly; browsers also cache
@@ -317,7 +324,12 @@ made it into the deploy.
   objects once traffic has moved. `pack-site.sh` refuses to finish if the page
   and `worker.js` do not name exactly the bundles it built - which also means a
   tag left stale in `worker.js` makes overwriting the live objects the only
-  build that passes, so bump it with the change, not at release time.
+  build that passes, so bump it with the change, not at release time. The
+  same change updates the tag everywhere this guide names it (the assembly
+  command, the upload commands, the rate-limit rule, troubleshooting), and
+  `web/test/deploy-docs.test.mjs` fails until it does. If the rate-limit rule
+  is set up in the dashboard, edit its paths at release too: it matches exact
+  paths, so it silently stops applying once the Worker serves new ones.
   The tag renames the small lab disk too (`load-lab.v3.data`): it is a static
   asset, not an R2 object, but it belongs to the same matched set, and a fixed
   name is how the 1 GiB disk would outlive the move to 4 GiB in browsers that
@@ -327,7 +339,7 @@ made it into the deploy.
   reproducible, so it usually needs no re-upload at all. R2 objects are content-addressed by
   you here, so overwriting the same key is fine; visitors get the new bytes
   (the immutable cache is keyed on the URL — if you need instant invalidation,
-  version the key, e.g. `load-rootfsB.v2.data`, and update `worker.js`).
+  version the key and update `worker.js`).
 
 ## Optional add-ons
 
@@ -346,7 +358,7 @@ made it into the deploy.
   paths — click **Edit expression** and paste:
 
   ```
-  http.request.uri.path in {"/qemu-system-x86_64.wasm" "/load-rootfsB.data" "/load-state.data"}
+  http.request.uri.path in {"/qemu-system-x86_64.wasm" "/load-rootfsB.v3.data" "/load-state.v3.data"}
   ```
 
   Set **the same characteristics = IP** (the only per-IP option on free), then
@@ -399,5 +411,9 @@ made it into the deploy.
   `split.sh` guards against this; make sure you deployed from `deploy/` after
   running it.
 - **Big file 404s at runtime** → the R2 key does not match the request path.
-  Keys must be exactly `qemu-system-x86_64.wasm`, `load-rootfsB.data`,
-  `load-state.data`.
+  Keys must be exactly the ones `worker.js`'s `R2_FILES` serves:
+  `qemu-system-x86_64.wasm`, `load-rootfsB.v3.data`, `load-state.v3.data`.
+- **`pack-site: page/Worker do not match the bundles`** → the build's tag is
+  not the one `worker.js` serves (or there was none). Re-run `make site` with
+  `R2TAG` set to the tag in `R2_FILES`; do not add unversioned or old-tag keys
+  to `R2_FILES`, whatever the message suggests.

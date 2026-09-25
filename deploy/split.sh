@@ -41,7 +41,7 @@ DROP=("${BIG[@]}" out.wasm "${PAGE[@]}")
 
 die() { echo "split.sh: $*" >&2; exit 1; }
 
-[ -d "$SRC" ] || die "built htdocs not found: $SRC (run: make site ENGINE=... GUEST=...)"
+[ -d "$SRC" ] || die "built htdocs not found: $SRC (run: make site ENGINE=... GUEST=... R2TAG=...)"
 [ ${#BIG[@]} -gt 0 ] || die "no file in $SRC is over the 25 MiB cap — is this a real build?"
 [ -f "$SRC/out.js" ] || die "$SRC has no out.js — is this a fork-engine build?"
 for f in web/fork/index.html web/fork/boot.js web/serialfs.js web/serialtap.js \

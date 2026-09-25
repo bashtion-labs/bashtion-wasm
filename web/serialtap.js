@@ -310,6 +310,11 @@ const SERIALTAP = (() => {
           if (ps[0] === 3) { if (buf === main) { main.lines.splice(0, main.base); main.base = 0; moves++; } break; }
           // all of the screen: nothing is left on it that could be misplaced
           if (ps[0] === 2 || (ps[0] === 0 && x === 0 && y === 0)) unsure = false;
+          // Erased from its first column, the cursor's row is no longer the
+          // rest of the line above it (xterm.js unmarks it too). `clear` and
+          // Ctrl-L leave the top row so, and it may have been the tail of a
+          // long line whose start is now in the scrollback.
+          if (ps[0] === 0 && x === 0) line(y).wrapped = false;
           if (ps[0] === 0) erase(cells, Math.min(x, cols), Infinity);
           if (ps[0] === 1) erase(cells, 0, cx + 1);
           for (let i = 0; i < rows; i++) {

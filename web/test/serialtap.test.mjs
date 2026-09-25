@@ -152,6 +152,22 @@ test('#69 atPrompt: a line typed and then erased is idle again', () => {
   assert.equal(atCap('clear', 'clear'), true);
 });
 
+test('#69 atPrompt: a clear after long wrapped output leaves a prompt, not a tail', () => {
+  // A paragraph of output 39 rows long, then the prompt: the top row of the
+  // screen is now the middle of that paragraph, a row reached by wrapping.
+  // `clear` (captured: ESC[H ESC[J under TERM=vt220) and readline's Ctrl-L
+  // (the same terminfo `clear`, then the prompt redrawn) erase it from its
+  // first column, and the prompt is drawn there. It is a line of its own, as
+  // xterm.js has it - not the end of the paragraph's last scrolled-off row.
+  const prompt = mirror('clear', 'boot');
+  const paragraph = prompt + 'cat notes.txt\r\r\n' + 'lorem ipsum '.repeat(260) + '\r\r\n' + prompt;
+  for (const [how, clear] of [['clear', 'clear\r\r\n\x1b[H\x1b[J' + prompt], ['ctrl-l', '\x1b[H\x1b[J' + prompt]]) {
+    const raw = paragraph + clear;
+    assert.equal(lastOf(raw), 'user@bashtion:~$', how);
+    assert.equal(at(raw), true, how);
+  }
+});
+
 test('#69 atPrompt: the wrapped tail of a half-typed line is not a prompt', () => {
   // `echo aaa…a x$ ` crosses the margin so that its second row reads `x$ `.
   // Home then End has readline move back down onto that row with an LF (and,

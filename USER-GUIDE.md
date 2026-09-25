@@ -122,7 +122,7 @@ takes a moment and needs no internet.
 - **A size limit on files.** One file can be at most 4 GB, the size of the spare disk. This is
   on purpose. Without it, a command like `fallocate -l 10G big.img` fills the main disk right
   up before it fails, and leaves a half-made file behind. With it, the command stops at once
-  with "File size limit exceeded", and nothing changes. `ulimit -a` shows the limit, and
+  with "File size limit exceeded" and uses no space. `ulimit -a` shows the limit, and
   `ulimit -f unlimited` removes it for that terminal. A `sudo` command starts fresh with the
   limit back on, so for admin work type `sudo -i` first, then `ulimit -f unlimited`.
 - **The window size.** The screen fits your browser window. If you make the window bigger, you

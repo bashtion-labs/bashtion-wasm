@@ -173,8 +173,11 @@ ck "#70 test setup: a private read-only root (rc=$rc)" "[ $rc != 99 ]"
 ck "#70 pack succeeds with nowhere to write but /tmp" "[ $rc = 0 ] && test -s /tmp/ro.tgz"
 ck "#70 pack did not write session.json in place"      "! test -e /var/lib/bashtion/session.json"
 ck "#70 its staging directory is gone afterwards"       "! test -s /tmp/ro.left"
-ck "#70 session.json is archived where unpack reads it" "tar tzf /tmp/ro.tgz | grep -qx var/lib/bashtion/session.json"
-ck "#70 the staging path does not leak into the archive" "! tar tzf /tmp/ro.tgz | grep -q '^tmp/'"
+# listed to a file first: under pipefail, `! tar | grep -q` passes when grep
+# exits on a match and tar dies of SIGPIPE
+lrc=0; tar tzf /tmp/ro.tgz > /tmp/ro.list 2>/dev/null || lrc=$?
+ck "#70 session.json is archived where unpack reads it" "[ $lrc = 0 ] && grep -qx var/lib/bashtion/session.json /tmp/ro.list"
+ck "#70 the staging path does not leak into the archive" "[ $lrc = 0 ] && ! grep -q '^tmp/' /tmp/ro.list"
 
 echo "==> #70 ...and that archive restores, deletion list and all"
 printf 'baseline\n' > /etc/bashtion-70-gone

@@ -419,12 +419,12 @@ ARG VDB_GIB=4
 # cleanup, so `fallocate -l 10G` on / stranded a ~240 MB stub and left the disk
 # at 100%. But ext4 checks RLIMIT_FSIZE (inode_newsize_ok) BEFORE it allocates
 # anything, so a request over the limit fails whole - EFBIG, "File size limit
-# exceeded" - and / is left exactly as it was. (SIGXFSZ's default action dumps
-# core into the cwd, but Ubuntu's systemd already holds the soft core limit
-# at 0.) At the spare disk's size, no file that could fit anywhere on this
-# machine is refused; the one casualty is a sparse file bigger than that. It
-# is soft, the hard limit stays unlimited, `ulimit -a` shows it and
-# `ulimit -f unlimited` lifts it.
+# exceeded" - without allocating a single block; at most an empty file is left
+# behind. (SIGXFSZ's default action dumps core into the cwd, but Ubuntu's
+# systemd already holds the soft core limit at 0.) At the spare disk's size, no
+# file that could fit anywhere on this machine is refused; the one casualty is
+# a sparse file bigger than that. It is soft, the hard limit stays unlimited,
+# `ulimit -a` shows it and `ulimit -f unlimited` lifts it.
 #
 # pam_limits applies it from /etc/pam.d/login, at the autologin that runs when
 # the snapshot is captured, so every process in a restored session inherits
@@ -446,7 +446,8 @@ RUN set -e; \
       '# blocks it did get, so `fallocate -l 10G /big.img` on a small / leaves a' \
       '# partial file behind and the disk 100% full. A file-size limit is checked' \
       '# before anything is allocated: a request over it fails at once, with' \
-      '# "File size limit exceeded", and / is left exactly as it was.' \
+      '# "File size limit exceeded", using no space - at most an empty file is' \
+      '# left behind.' \
       '#' \
       "# The limit is ${VDB_GIB} GiB, the size of the spare disk /dev/vdb, so nothing" \
       '# that could fit anywhere on this machine is refused - except a sparse' \
@@ -482,7 +483,7 @@ RUN set -e; rm -f /rootfs/etc/motd; printf '%s\n' \
       "            is a spare ${VDB_GIB} GiB disk, empty and unpartitioned: use it for" \
       '            anything large, and for partitioning, LVM and quota work.' \
       "            A file may not exceed ${VDB_GIB} GiB, so an oversized fallocate fails" \
-      '            at once, leaving / untouched. `ulimit -f unlimited` lifts that' \
+      '            at once and uses no space. `ulimit -f unlimited` lifts that' \
       '            for one shell (sudo starts a new one: lift it in `sudo -i`).' \
       '  Saving    Nothing is saved automatically. Use "Download my work"' \
       '            before you close the tab.' \

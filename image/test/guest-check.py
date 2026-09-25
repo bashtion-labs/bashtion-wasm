@@ -222,6 +222,10 @@ def run_checks(con):
                            "sudo bash -c 'ulimit -f unlimited; ulimit -Sf'")
     check('#70 ulimit -f unlimited lifts it, on either side of sudo',
           out.split()[-2:] == ['unlimited', 'unlimited'], out)
+    rc, out = capture(con, "grep -cF -e 'spare 4 GiB disk' -e 'may not exceed 4 GiB' "
+                           "-e 'ulimit -f unlimited' /etc/motd")
+    check('#70 the motd gives the disk size, the cap and how to lift it',
+          out.strip() == '3', out)
     for who, sudo, path in (('the user', '', '/var/tmp/bashtion-70.img'),
                             ('root via sudo', 'sudo ', '/bashtion-70.img')):
         # Measured and cleaned up in one command, so a failure strands nothing.

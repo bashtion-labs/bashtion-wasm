@@ -311,12 +311,33 @@ test('#69 atPrompt: not on a line whose start has left the scrollback', () => {
   assert.equal(at(long), false);
 });
 
-test('#69 the live screen is the replay of the mirror, however the bytes are chunked', () => {
+// Where each capture ends, from what the program was doing when it was
+// captured: the line the cursor is on, and whether it is an idle shell prompt.
+const ENDS = {
+  'lvm-batch-C': ['user@bashtion:~$', true],
+  'lvm-perchar': ['user@bashtion:~$', true],
+  erase: ['user@bashtion:~$', true],
+  'kill-line': ['user@bashtion:~$', true],
+  history: ['user@bashtion:~$', true],
+  'home-end': ['user@bashtion:~$ echo ' + 'a'.repeat(58) + 'x$', false],
+  'home-end-C': ['user@bashtion:~$ echo ' + 'a'.repeat(58) + 'x$', false],
+  'wrapped-kill': ['user@bashtion:~$', true],
+  'wrapped-kill-C': ['user@bashtion:~$', true],
+  'ctrl-c': ['user@bashtion:~$', true],
+  clear: ['user@bashtion:~$', true],
+  vim: ['#', false],             // `# ` typed on the file's first line
+  nano: ['#', false],
+  apt: ['root@bashtion:~#', true],
+  monitor: ['(qemu)', false],    // after `info status`
+};
+
+test('#69 the live screen ends where each capture does, however the bytes are chunked', () => {
   // install() keeps a model in step with the mirror rather than replaying the
   // whole session on every question. Escape sequences and UTF-8 straddle the
   // chunk boundaries here; the mirror itself must stay raw.
+  assert.deepEqual(Object.keys(ENDS).sort(), Object.keys(CAPTURES).sort());
   const enc = new TextEncoder();
-  for (const name of Object.keys(CAPTURES)) {
+  for (const [name, [line, idle]] of Object.entries(ENDS)) {
     const raw = mirror(name);
     for (const n of [1, 3, 7, 4096]) {
       const win = {};
@@ -325,8 +346,8 @@ test('#69 the live screen is the replay of the mirror, however the bytes are chu
       t.install(master, win);
       master.emit(enc.encode(raw));
       assert.equal(win.__serial, raw, `${name}/${n}: the mirror is not raw`);
-      assert.deepEqual(t.screen(win), t.screen({ __serial: raw }), `${name}/${n}`);
-      assert.equal(t.atPrompt(win), t.atPrompt({ __serial: raw }), `${name}/${n}`);
+      assert.equal(t.lastLine(win), line, `${name}/${n}`);
+      assert.equal(t.atPrompt(win), idle, `${name}/${n}`);
     }
   }
 });

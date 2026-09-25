@@ -70,11 +70,13 @@ const SERIALTAP = (() => {
   // cursor motion stops at the scroll region's edges. It departs from it in
   // two deliberate ways:
   //
-  //  * A row that was reached by wrapping stays part of the line above it for
-  //    good. xterm.js unmarks it as soon as an LF lands on it - and readline
-  //    moves the cursor down through its own wrapped line with exactly that
-  //    LF (Home, then End). Unmarked, the tail of a half-typed command becomes
-  //    a line of its own, and a tail like `x$ ` is prompt-shaped.
+  //  * A row that was reached by wrapping stays part of the line above it
+  //    until ED erases it from its first column (`clear`, Ctrl-L). xterm.js
+  //    also unmarks it as soon as an LF lands on it or EL erases it from its
+  //    first column - and readline moves the cursor down through its own
+  //    wrapped line with exactly that LF (Home, then End). Unmarked, the tail
+  //    of a half-typed command becomes a line of its own, and a tail like
+  //    `x$ ` is prompt-shaped.
   //  * A resize does not reflow. Rows keep what they hold, so a line joined
   //    across its wraps reads the same whatever the width now is.
   //

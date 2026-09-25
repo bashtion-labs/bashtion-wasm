@@ -82,11 +82,19 @@ Which to use: a question about **what arrived after a point** — has the guest 
 later can take such a match away; on a screen, a `clear` would. A question about **what is
 on the screen now** — is the console idle at a prompt, what is on the line being typed —
 asks `SERIALTAP.atPrompt()` / `screen()` / `lastLine()`, which replay the record through a
-model of the terminal: cursor motion, erasure, the deferred wrap at the right margin, scroll
-regions, the alternate screen. The page asks `atPrompt()` before it types anything the user
-did not (the resize sync, the boot handover); it requires the cursor's line, joined across
-its soft wraps, to be prompt-shaped up to the cursor, empty after it, and the last thing on
-the screen.
+minimal model of the terminal: cursor motion, erasure, the deferred wrap at the right margin,
+scroll regions, the alternate screen. It is enough for those questions and is not an
+emulation of xterm.js; rarer sequences are only approximated.
+
+The page asks `atPrompt()` before it types anything the user did not (the resize sync, the
+boot handover). A wrong "idle" would type `stty rows …` and Enter into whatever owns the
+keyboard, where a wrong "busy" only delays the page, so it errs toward "busy". It requires
+the cursor's line, joined across its soft wraps, to be prompt-shaped up to the cursor (no
+whitespace before the trailing `$ ` or `# `, or Ubuntu's `user@host:dir$ ` with that the only
+`$`/`#`), empty after it, and the last thing on the screen. And it says no outright on the
+alternate screen, for a line whose start has left the model's scrollback, and after a saved
+cursor is restored across a scroll or resize (xterm.js moves it with the text; the model does
+not follow that), until the next fresh line, clear or reset.
 
 ## Tests
 
@@ -94,4 +102,6 @@ the screen.
 browser-shaped scope and drives them against a guest mock that reproduces readline's echo and
 a command reading the tty directly. The screen model is tested against real console output —
 bash/readline, vim, nano and apt under the guest's TERM, and QEMU's monitor — captured
-byte for byte into `test/console-captures.mjs`. CI runs it as the `web-tests` job.
+byte for byte into `test/console-captures.mjs`, and against short hand-written streams for
+what `atPrompt()` must refuse, each answer taken from the terminal behaviour it exercises
+rather than from the model. CI runs it as the `web-tests` job.

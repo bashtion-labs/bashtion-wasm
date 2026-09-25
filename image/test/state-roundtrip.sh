@@ -25,6 +25,8 @@ install -D -m755 "$SEED/usr/local/lib/bashtion/state.py" /usr/local/lib/bashtion
 for f in pack unpack baseline; do
   install -D -m755 "$SEED/usr/local/sbin/bashtion-$f" "/usr/local/sbin/bashtion-$f"
 done
+MARKER=/usr/lib/bashtion/archive-format-2
+install -D -m644 "$SEED$MARKER" "$MARKER"
 
 fail=0
 ck() { if eval "$2" >/dev/null 2>&1; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
@@ -78,6 +80,7 @@ printf 'baseline\n' > /etc/bashtion-will-be-deleted
 printf 'original\n' > /etc/bashtion-config
 
 echo "==> unpack"
+mv "$MARKER" /tmp/marker.aside          # so we can see whether unpack writes it
 bashtion-unpack < /tmp/session.tgz 2>&1 | tee /tmp/full.out
 
 echo "==> check"
@@ -98,6 +101,10 @@ ck "#72 pack records this build's id"    "[ \"\$(meta /tmp/session.tgz build)\" 
 ck "#72 ...in the format that has one"   "[ \"\$(meta /tmp/session.tgz format)\" = 2 ]"
 ck "#72 a same-build archive restores in full" \
    "tail -1 /tmp/full.out | grep -q '^bashtion-unpack: restored; '"
+ck "#72 pack adds the marker a format-1 unpacker refuses" \
+   "tar tzf /tmp/session.tgz | grep -x ${MARKER#/}"
+ck "#72 ...and unpack never writes it"   "! test -e $MARKER"
+mv /tmp/marker.aside "$MARKER"
 
 echo "==> archive stays small (only changed system files)"
 size=$(stat -c %s /tmp/session.tgz)
@@ -198,7 +205,7 @@ chown user:user /home/user/v1.txt /home/user/share/v1.txt
 bashtion-pack > /tmp/v1.tgz 2>/dev/null
 printf '{"marker":"untouched"}' > /var/lib/bashtion/session.json
 ck "#72 (the archive does carry the stale system file)" \
-   "tar tzf /tmp/v1.tgz | grep -qx etc/bashtion-fixed"
+   "tar tzf /tmp/v1.tgz | grep -x etc/bashtion-fixed"
 ck "#72 (...and the deletion)" \
    "[ \"\$(meta /tmp/v1.tgz deleted)\" = \"['/etc/bashtion-dropped']\" ]"
 # Build 2 fixes that same file and needs the deleted one. Then a reloaded page.
@@ -335,5 +342,31 @@ rows = [(p, chr(9).join(v)) for p, v in base.items()]
 sys.exit(0 if state.identity(rows) == state.identity(rows[::-1]) == ident else 1)"
 }
 ck "#72 the id does not depend on the order a directory is listed in" "order_free"
+xattr_collision() {
+  python3 -B -c "import os, sys; sys.path.insert(0, '/usr/local/lib/bashtion'); import state
+for f in ('/tmp/xa1', '/tmp/xa2'):
+    open(f, 'w').write('same')
+    os.utime(f, (1700000000, 1700000000))
+os.setxattr('/tmp/xa1', 'user.a', b'x' + bytes([0]) + b'user.b=y')
+os.setxattr('/tmp/xa2', 'user.a', b'x')
+os.setxattr('/tmp/xa2', 'user.b', b'y')
+sys.exit(0 if state.fingerprint('/tmp/xa1') != state.fingerprint('/tmp/xa2') else 1)"
+}
+ck "#72 one xattr cannot pass for two"                "xattr_collision"
+
+echo "==> #72 a format-1 unpacker - every build before #72 - refuses a format-2 archive"
+# image/test/fixtures/state-format1.py is that unpacker, byte for byte: it
+# never reads format or build, so the marker member is all that stops it.
+rm -f /home/user/legacy.txt
+printf 'fixed-in-v2\n' > /etc/bashtion-fixed
+printf '{"marker":"untouched"}' > /var/lib/bashtion/session.json
+if python3 /src/image/test/fixtures/state-format1.py unpack < /tmp/v2.tgz > /tmp/old.out 2>&1
+then rc=0; else rc=$?; fi
+sed 's/^/     /' /tmp/old.out
+ck "#72 format-1 unpacker: refused"                   "[ $rc != 0 ]"
+ck "#72 format-1 unpacker: because of the marker"     "grep -q 'outside the session.*archive-format-2' /tmp/old.out"
+ck "#72 format-1 unpacker: no home file written"      "! test -e /home/user/legacy.txt"
+ck "#72 format-1 unpacker: no system file written"    "[ \"\$(cat /etc/bashtion-fixed)\" = fixed-in-v2 ]"
+ck "#72 format-1 unpacker: session.json not written"  "grep -q untouched /var/lib/bashtion/session.json"
 
 exit $fail

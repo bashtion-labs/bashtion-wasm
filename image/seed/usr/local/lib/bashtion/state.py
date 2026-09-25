@@ -39,6 +39,7 @@ import hashlib
 import json
 import os
 import stat
+import struct
 import subprocess
 import sys
 import textwrap
@@ -52,8 +53,15 @@ BASELINE = '/usr/local/lib/bashtion/baseline.tsv'
 ID_TAG = '#build'
 SESSION = STATE_DIR + '/session.json'
 # 1: format, created, roots, home, deleted.
-# 2: adds build, the build id of the image that saved it.
+# 2: adds build, the build id of the image that saved it, and MARKER.
 FORMAT = 2
+# Shipped in the image and added to every archive, outside every tree an
+# unpacker has ever been allowed to write. A format-1 unpacker never looks at
+# format or build and would apply this archive's system files to whatever
+# build it runs on - an old tab still open, a deploy rolled back - so instead
+# it meets this, refuses the whole archive, and writes nothing. Never
+# extracted here.
+MARKER = '/usr/lib/bashtion/archive-format-2'
 
 # Machine identity and things regenerated on every boot: restoring these onto a
 # different session is wrong, not merely useless.
@@ -72,8 +80,10 @@ SKIP_PREFIX = (
 # lands outside the tree this tool claims, and anything with a .. in it.
 ALLOWED = tuple(p.lstrip('/') + '/' for p in [HOME] + SYSTEM_ROOTS + [STATE_DIR])
 # ...and the same trees as archive member names spell them
+ROOTS_REL = tuple(a.rstrip('/') for a in ALLOWED)
 HOME_REL = HOME.lstrip('/')
 SESSION_REL = SESSION.lstrip('/')
+MARKER_REL = MARKER.lstrip('/')
 
 
 def skip(path):
@@ -191,15 +201,19 @@ def identity(rows):
 
 
 def fingerprint(path):
-    """Type, owner, contents or link target, and xattrs of one path."""
+    """Type, owner, contents or link target, and xattrs of one path.
+
+    Contents and xattrs are separate digests, and every xattr name and value
+    is length-prefixed, so no arrangement of one can pass for another.
+    """
     try:
         st = os.lstat(path)
     except OSError:
         return 'gone'
-    h = hashlib.sha256()
+    data = hashlib.sha256()
     try:
         if stat.S_ISLNK(st.st_mode):
-            h.update(os.fsencode(os.readlink(path)))
+            data.update(os.fsencode(os.readlink(path)))
         elif stat.S_ISREG(st.st_mode):
             # NOFOLLOW/NONBLOCK: whatever it has become since the lstat - a
             # symlink, a fifo - is read as nothing rather than followed or
@@ -207,20 +221,24 @@ def fingerprint(path):
             fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
             with os.fdopen(fd, 'rb') as f:
                 for chunk in iter(lambda: f.read(1 << 16), b''):
-                    h.update(chunk)
+                    data.update(chunk)
+        contents = data.hexdigest()
     except OSError as e:
-        h.update(('unreadable %s' % e.errno).encode())
+        contents = 'unreadable-%s' % e.errno
     try:
         names = sorted(os.listxattr(path, follow_symlinks=False))
     except OSError:
         names = []
+    xattrs = hashlib.sha256(struct.pack('>I', len(names)))
     for name in names:
         try:
             value = os.getxattr(path, name, follow_symlinks=False)
         except OSError:
             value = b''
-        h.update(b'\0' + os.fsencode(name) + b'=' + value)
-    return '%o %d %d %s' % (st.st_mode, st.st_uid, st.st_gid, h.hexdigest())
+        for part in (os.fsencode(name), value):
+            xattrs.update(struct.pack('>I', len(part)) + part)
+    return '%o %d %d %s %s' % (st.st_mode, st.st_uid, st.st_gid, contents,
+                               xattrs.hexdigest())
 
 
 def valid_id(ident):
@@ -295,7 +313,7 @@ def cmd_pack():
                    'roots': SYSTEM_ROOTS, 'home': HOME, 'deleted': deleted,
                    'build': build}, f)
 
-    members = home + system + [SESSION]
+    members = home + system + [SESSION, MARKER]
     bytes_total = 0
     for p in members:
         try:
@@ -415,7 +433,8 @@ def cmd_unpack():
         sys.exit('bashtion-unpack: not a readable archive')
     members = set()
     sessions = []                 # session.json, as the listing spells it
-    home = set()                  # the home tree, once per spelling of its ./
+    roots = set()                 # every tree it writes under, per spelling
+    home = set()                  # ...and the home tree alone
     for name in listed.stdout.decode('utf-8', 'replace').splitlines():
         # A leading ./ is only a way of spelling a name, and is dropped. Any
         # other way of making one non-canonical - a .., a ., a //, a leading
@@ -431,6 +450,8 @@ def cmd_unpack():
         if (n.startswith('/') or '..' in key.split('/')
                 or os.path.normpath(key) != key):
             sys.exit('bashtion-unpack: refusing path %r' % name)
+        if key == MARKER_REL:
+            continue
         if not (key + '/').startswith(ALLOWED):
             sys.exit('bashtion-unpack: refusing path outside the session: %r' % name)
         members.add(key)
@@ -438,9 +459,12 @@ def cmd_unpack():
             sessions.append(name)
         # tar selects members by exact name, `./home/user` and `home/user`
         # being different ones, and the listing escapes unusual characters -
-        # so select the home tree by its root, spelled as this archive does.
-        if in_home(key):
-            home.add(name[:len(name) - len(n)] + HOME_REL)
+        # so select each tree by its root, spelled as this archive does.
+        # Whatever is not under one of them - MARKER - is never extracted.
+        root = next(r for r in ROOTS_REL if (key + '/').startswith(r + '/'))
+        roots.add(name[:len(name) - len(n)] + root)
+        if root == HOME_REL:
+            home.add(name[:len(name) - len(n)] + root)
 
     # The system half of an archive is a diff from the image that saved it,
     # and its deletion list is that image's file list. Applied to the same
@@ -458,12 +482,12 @@ def cmd_unpack():
 
     # ALLOWED has already refused anything outside HOME, the system roots and
     # STATE_DIR, so HOME is the only home tree an archive can carry.
-    select = [] if full else ['--'] + sorted(home)
-    if full or home:
+    select = sorted(roots if full else home)
+    if select:
         out = subprocess.run(
             ['tar', 'xzf', '-', '-C', '/', '--numeric-owner', '--same-owner',
-             '--same-permissions', '--acls', '--xattrs', '--xattrs-include=*']
-            + select, input=data, capture_output=True)
+             '--same-permissions', '--acls', '--xattrs', '--xattrs-include=*',
+             '--'] + select, input=data, capture_output=True)
         if out.returncode not in (0, 1):
             err = out.stderr.decode('utf-8', 'replace').strip().splitlines()
             sys.exit('bashtion-unpack: %s' % (err or ['tar failed'])[-1])

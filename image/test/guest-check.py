@@ -297,6 +297,10 @@ def run_checks(con):
     check('#72 pack records the build id, in format 2',
           m is not None and m.group(1) == '2' and len(stamp) == 64
           and m.group(2) == stamp, out)
+    # ...and carries the member that makes a pre-#72 unpacker - an old tab,
+    # a rolled-back deploy - refuse it instead of applying it blind.
+    rc, out = capture(con, 'tar tzf /tmp/probe.tgz | grep -cx usr/lib/bashtion/archive-format-2')
+    check('#72 the archive carries the format-2 marker', out.strip() == '1', out)
 
     capture(con, 'rm -f ~/marker.txt ~/share/marker.txt; '
                  'sudo rm -rf /opt/example /etc/bashtion-probe; '

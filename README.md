@@ -133,6 +133,13 @@ anything, then:
 So after the guest image is rebuilt and redeployed, work saved before the update comes back
 home-only, and system changes have to be made again.
 
+The other direction needs the archive's own shape, because a helper from before format 2
+never reads `format` or `build`. Every format-2 archive also carries
+`usr/lib/bashtion/archive-format-2`, a member outside every tree any `bashtion-unpack` has
+been allowed to write, so an older build - a tab left open across a deploy, or a rollback -
+refuses the whole archive before extracting anything, rather than applying a newer build's
+system files. The current helper skips that member and never writes it.
+
 **How it travels.** The payload is fed to a command reading the tty directly (`head -c N`),
 never to a heredoc: readline echoes and redisplays every line typed at an interactive prompt
 whatever `stty -echo` says, which sent the archive down the wire twice and redrew each 4 KB

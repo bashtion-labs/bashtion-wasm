@@ -97,6 +97,18 @@ test('#69 the cover lifts once the handover\'s clear has run and the prompt is b
   assert.equal(b.lifted(), true);
 });
 
+test('#69 Ubuntu\'s prompt in a directory with a space counts as a prompt', (t) => {
+  // \w in the default PS1 can hold spaces. Refused, the handover is never
+  // typed and the cover waits out its 30-minute fallback.
+  const prompt = '\r\r\nuser@bashtion:~/lab notes$ ';
+  const b = boot(t, prompt);
+  b.wait(2000);
+  assert.equal(b.pasted.length, 1, 'the handover was not typed');
+  b.win.__serial += b.pasted[0].replace(/\n$/, '') + '\r\r\n\x1b[H\x1b[JWelcome to bashtion.' + prompt;
+  b.wait(300);
+  assert.equal(b.lifted(), true, 'the cover waited out its 15 s fallback');
+});
+
 test('#69 a margin redraw that splits the echoed `clear` does not hold the cover up', (t) => {
   // readline's redraw across the right margin writes the new row's first
   // character, CR, then that character again (see console-captures.mjs,

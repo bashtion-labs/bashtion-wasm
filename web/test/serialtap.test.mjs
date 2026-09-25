@@ -76,6 +76,20 @@ test('#60 atPrompt rejects a half-typed command line that ends in $', () => {
   assert.equal(at('\r\nuser@bashtion:~$ grep # '), false);
 });
 
+test('#69 atPrompt accepts Ubuntu\'s prompt in a directory with a space in it', () => {
+  // The default PS1 is \u@\h:\w\$ , and \w is the working directory as it is
+  assert.equal(at('\r\nuser@bashtion:~/lab notes$ '), true);
+  assert.equal(at('\r\nroot@bashtion:/srv/my files/a b# '), true);
+  // ... but a command typed after it adds a second marker, or none at the end
+  assert.equal(at('\r\nuser@bashtion:~/lab notes$ echo $ '), false);
+  assert.equal(at('\r\nuser@bashtion:~/lab notes$ grep # '), false);
+  assert.equal(at('\r\nuser@bashtion:~/lab notes$ ls'), false);
+  // and outside that shape, whitespace still rules a line out
+  assert.equal(at('\r\n$ echo a b$ '), false);
+  assert.equal(at('\r\nnotes: see ~/a b$ '), false);
+  assert.equal(at('\r\n> echo me@host:a b$ '), false);
+});
+
 test('atPrompt rejects a console in the middle of output', () => {
   assert.equal(at('\r\nReading package lists... 47%'), false);
   assert.equal(at('\r\nuser@bashtion:~$ sudo apt install tree\r\nUnpacking tree ...'), false);

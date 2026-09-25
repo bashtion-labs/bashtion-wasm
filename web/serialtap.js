@@ -520,7 +520,10 @@ const SERIALTAP = (() => {
   // they recall a variable name — and the page would then paste `stty rows …`
   // into the middle of it and press Enter. Require the text before the cursor
   // to be entirely prompt-shaped: no whitespace before the trailing marker,
-  // which a typed command always has.
+  // which a typed command always has. The one prompt allowed spaces is
+  // Ubuntu's default, `user@host:dir$ `, since the directory may have them
+  // (`~/lab notes`) - and only with that marker the sole `$` or `#` on the
+  // line, which rules out anything typed after it (`...$ echo $ `).
   //
   // And ask it of the screen, not of the raw mirror (#69). Read raw, a line
   // that was typed and then erased still looks typed, and the tail of a
@@ -535,9 +538,10 @@ const SERIALTAP = (() => {
   // Wherever the model cannot vouch for its reading of that line, the answer
   // is no. A wrong "busy" only delays the page; a wrong "idle" types into
   // whatever owns the keyboard.
+  const PROMPT = /^(?:\S*|[^\s@$#]+@[^\s:$#]+:[^$#]*)[$#] $/;
   function atPrompt(win) {
     const c = screenOf(win).cursorLine();
-    return c.sure && /^\S*[$#] $/.test(c.before) && !/\S/.test(c.after) && !c.below;
+    return c.sure && PROMPT.test(c.before) && !/\S/.test(c.after) && !c.below;
   }
 
   return {

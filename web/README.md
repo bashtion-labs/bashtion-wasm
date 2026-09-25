@@ -18,11 +18,13 @@ JS bundle (`out.js`) plus a `.wasm` and a pthread worker.
 - `bootscreen.js` — the startup overlay: an ASCII bastion banner shown over the terminal
   until a shell prompt appears, at which point it clears the guest screen and reveals a clean
   prompt. Hides all SeaBIOS/kernel/systemd output.
-- `serialtap.js` — the page's plain-text mirror of the guest console
-  (`window.__serial`), which the boot screen, save/load and tests all read. One
-  streaming UTF-8 decoder for the session: xterm-pty emits fixed 4096-byte
-  chunks, so decoding each chunk separately replaced every multi-byte sequence
-  that straddled a boundary with U+FFFD.
+- `serialtap.js` — the page's raw record of everything the guest writes to the console
+  (`window.__serial`), and a model of the terminal that reads it back the way the screen
+  shows it (`SERIALTAP.screen()`, `lastLine()`, `atPrompt()`). The boot screen, save/load,
+  the resize sync and the tests all read one or the other; see below for which, and why.
+  One streaming UTF-8 decoder for the session: xterm-pty emits fixed 4096-byte chunks, so
+  decoding each chunk separately replaced every multi-byte sequence that straddled a
+  boundary with U+FFFD.
 - `termfit.js` — sizes the xterm grid to the window and produces the `stty rows R cols C`
   the guest has to be told, since a serial console carries no window-size signal.
 - `serialfs.js` — Save/Load of the session. The engine's real filesystem lives in the wasm
@@ -56,14 +58,40 @@ sequences bracket every command's output. Any code reading the serial stream mus
 sequences, not just CSI — `SERIALTAP.strip()` does. The pages expose `window.__serial`,
 `window.__paste`, `window.__xterm` and `window.__fit` for tests.
 
-Two things about `window.__serial` are easy to get wrong. It is decoded by a single streaming
-UTF-8 decoder, because xterm-pty emits fixed 4096-byte chunks that cut multi-byte sequences in
-half. And it contains the *echo* of every command line typed at the prompt, before that command
-has run — readline redisplays what it is given regardless of the tty's ECHO flag — so anything
-waiting for a marker must make sure the marker cannot appear in the command that produces it.
+`window.__serial` is every character the guest has written, decoded by a single streaming
+UTF-8 decoder (xterm-pty emits fixed 4096-byte chunks that cut multi-byte sequences in half)
+and appended in order. Nothing is removed from it and nothing in it is carried out. So:
+
+- **It is not what the guest received.** It contains the *echo* of every command line typed
+  at the prompt, before that command has run — readline redisplays what it is given regardless
+  of the tty's ECHO flag — so anything waiting for a marker must make sure the marker cannot
+  appear in the command that produces it.
+- **It is not what the screen shows.** Line editors redraw, and the redraws are in the record
+  as characters rather than applied. QEMU's monitor reprints its whole buffer after N
+  cursor-lefts on every keystroke, so the restore page's `cont` reads back, escapes stripped,
+  as `ccoconcont`. Readline crossing the right margin writes the new row's first character,
+  then CR, then writes it again (`lv\rvcreate`); delete the CR and `lvcreate` reads
+  `lvvcreate`. Neither is input the guest received — that is what #61's "duplicated
+  characters" were (#69).
+- **Every line ends CR CR LF**: the guest's tty adds a CR before each LF, and xterm-pty adds
+  another on the way out.
+
+Which to use: a question about **what arrived after a point** — has the guest printed
+`BWR-OK` since the command was sent, has `clear` run since the handover — searches
+`window.__serial` from an offset (`serialfs.js`, `bootscreen.js`'s reveal). Nothing written
+later can take such a match away; on a screen, a `clear` would. A question about **what is
+on the screen now** — is the console idle at a prompt, what is on the line being typed —
+asks `SERIALTAP.atPrompt()` / `screen()` / `lastLine()`, which replay the record through a
+model of the terminal: cursor motion, erasure, the deferred wrap at the right margin, scroll
+regions, the alternate screen. The page asks `atPrompt()` before it types anything the user
+did not (the resize sync, the boot handover); it requires the cursor's line, joined across
+its soft wraps, to be prompt-shaped up to the cursor, empty after it, and the last thing on
+the screen.
 
 ## Tests
 
 `node --test web/test/*.test.mjs` loads the real page scripts (no bundler, no imports) into a
-browser-shaped scope and drives them against a guest mock that reproduces those two behaviours.
-CI runs it as the `web-tests` job.
+browser-shaped scope and drives them against a guest mock that reproduces readline's echo and
+a command reading the tty directly. The screen model is tested against real console output —
+bash/readline, vim, nano and apt under the guest's TERM, and QEMU's monitor — captured
+byte for byte into `test/console-captures.mjs`. CI runs it as the `web-tests` job.

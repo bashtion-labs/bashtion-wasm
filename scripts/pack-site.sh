@@ -15,9 +15,9 @@
 #               vdb.qcow2 and vm.state
 #     --out     where to assemble (default out/site)
 #     --r2-tag  version suffix for the snapshot-set bundles - the two on R2 and
-#               the lab disk - e.g. --r2-tag v2 gives load-rootfsB.v2.data,
-#               load-state.v2.data and load-lab.v2.data. Required whenever
-#               their bytes change.
+#               the lab disk - e.g. --r2-tag v3 gives load-rootfsB.v3.data,
+#               load-state.v3.data and load-lab.v3.data. Must be the tag
+#               deploy/worker.js serves (see there for when to bump it).
 #
 # Files are located by NAME anywhere under the given directory, so it does not
 # matter how download-artifact happened to nest them.

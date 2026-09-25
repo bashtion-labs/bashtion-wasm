@@ -185,8 +185,8 @@ The engine and the saved-state file are under wrangler's single-upload cap:
 npx wrangler r2 object put bashtion-assets/qemu-system-x86_64.wasm \
     --file out/site/qemu-system-x86_64.wasm --remote
 
-npx wrangler r2 object put bashtion-assets/load-state.v2.data \
-    --file out/site/load-state.v2.data --remote
+npx wrangler r2 object put bashtion-assets/load-state.v3.data \
+    --file out/site/load-state.v3.data --remote
 ```
 
 ## Step 4 — Upload the rootfs (multipart) with a least-privilege token
@@ -244,11 +244,12 @@ nor `no_check_bucket` outside the advanced prompts.)
 **4c. Upload (multipart):**
 
 ```sh
-rclone copy out/site/load-rootfsB.v2.data r2:bashtion-assets/ \
+rclone copy out/site/load-rootfsB.v3.data r2:bashtion-assets/ \
   --s3-upload-cutoff=100M --s3-chunk-size=100M --progress
 ```
 
-This stores it as `r2:bashtion-assets/load-rootfsB.data`.
+This stores it as `r2:bashtion-assets/load-rootfsB.v3.data`. (The `.v3` in
+these names is the tag `worker.js` serves; use whatever `split.sh` printed.)
 
 **4d. Confirm all three objects landed, then retire the token:**
 
@@ -308,11 +309,15 @@ made it into the deploy.
   loader slices the wrong range and hands QEMU a truncated disk or memory
   image, which fails later and mysteriously.
 
-  So: `make site ENGINE=... GUEST=... R2TAG=v3`, change the two keys in
-  `worker.js`'s `R2_FILES` to match, upload the new objects, `wrangler deploy`
-  (the switch is atomic — nothing points at the new keys until the page does),
-  then delete the old objects once traffic has moved. `pack-site.sh` refuses to
-  finish if the page and `worker.js` do not name exactly the bundles it built.
+  So: the change that alters the set also moves the two keys in `worker.js`'s
+  `R2_FILES` to a tag that has never been uploaded (#70 took them from v2 to
+  v3; the next is v4). At release, `make site ENGINE=... GUEST=... R2TAG=<that
+  tag>`, upload the new objects, `wrangler deploy` (the switch is atomic —
+  nothing points at the new keys until the page does), then delete the old
+  objects once traffic has moved. `pack-site.sh` refuses to finish if the page
+  and `worker.js` do not name exactly the bundles it built - which also means a
+  tag left stale in `worker.js` makes overwriting the live objects the only
+  build that passes, so bump it with the change, not at release time.
   The tag renames the small lab disk too (`load-lab.v3.data`): it is a static
   asset, not an R2 object, but it belongs to the same matched set, and a fixed
   name is how the 1 GiB disk would outlive the move to 4 GiB in browsers that

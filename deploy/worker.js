@@ -29,10 +29,14 @@
 // of its .data, so a stale object is not an error - it is a silently truncated
 // disk or memory image. Bump the suffix whenever the bytes change (pack-site.sh
 // --r2-tag), deploy, and delete the old objects once traffic has moved.
+// Bump it in the same commit as the change to the snapshot set, to a tag never
+// uploaded before: pack-site.sh only accepts the tag named here, so a stale one
+// makes overwriting the live objects the one command that passes. v3 is #70's
+// set (4 GiB lab disk, file-size cap); v2 is the set before it.
 const R2_FILES = {
   '/qemu-system-x86_64.wasm':    { key: 'qemu-system-x86_64.wasm',    type: 'application/wasm' },
-  '/load-rootfsB.v2.data':       { key: 'load-rootfsB.v2.data',       type: 'application/octet-stream' },
-  '/load-state.v2.data':         { key: 'load-state.v2.data',         type: 'application/octet-stream' },
+  '/load-rootfsB.v3.data':       { key: 'load-rootfsB.v3.data',       type: 'application/octet-stream' },
+  '/load-state.v3.data':         { key: 'load-state.v3.data',         type: 'application/octet-stream' },
 };
 
 const SECURITY_HEADERS = {

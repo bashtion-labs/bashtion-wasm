@@ -113,6 +113,34 @@ Installed packages (`/var/lib/dpkg` plus their unpacked files) and `/var` genera
 captured - they are far too large for this channel. `apt install` from the offline repo has to
 be repeated after a restore. The UI says so at save time.
 
+**An archive is tied to the build that saved it.** Its system half is a diff from that image's
+baseline, and its deletion list is that image's file list, so it only means something on the
+same image. Each image carries a build id - the first line of
+`/usr/local/lib/bashtion/baseline.tsv`, a sha256 over every path the baseline covers with its
+contents, owner, extended attributes and hard links - and every archive records it in
+`session.json` (format 2). `bashtion-unpack` reads `session.json` out of the archive before
+extracting anything, then:
+
+- **same build** - restores everything, as above;
+- **a different build, or no build recorded** (every archive saved before format 2) - restores
+  `/home/user` only, `~/share` included, and skips the system files and the deletions, which
+  would otherwise silently revert whatever the newer image changed in the same files. It
+  prints a warning naming both builds, and the page reports "Only your home folder was
+  restored" rather than a plain success;
+- **a format newer than it understands, or a `session.json` it cannot read** (not valid JSON,
+  not a regular file, present twice) - refuses, having written nothing.
+
+So after the guest image is rebuilt and redeployed, work saved before the update comes back
+home-only, and system changes have to be made again.
+
+The other direction needs the archive's own shape, because a helper from before format 2
+never reads `format` or `build`. Every format-2 archive also carries
+`usr/lib/bashtion/archive-format-2`, a member outside every tree any `bashtion-unpack` has
+been allowed to write, so an older build - a tab left open across a deploy, or a rollback -
+refuses the whole archive before extracting anything, rather than applying a newer build's
+system files. `bashtion-pack` writes it back if it has been deleted or replaced by something
+tar would not pack (a socket); `bashtion-unpack` skips that member and never extracts it.
+
 **How it travels.** The payload is fed to a command reading the tty directly (`head -c N`),
 never to a heredoc: readline echoes and redisplays every line typed at an interactive prompt
 whatever `stty -echo` says, which sent the archive down the wire twice and redrew each 4 KB
@@ -141,8 +169,9 @@ you see only "Saving your work..." and a completion tick, never a wall of base64
   The guest is configured to be *coherently* offline rather than half-configured:
   `systemd-resolved` is masked, `/etc/resolv.conf` and `/etc/netplan/` say why they are empty,
   and `/etc/motd` states it at the start of every session.
-- **Installed packages do not survive a save.** Everything else about a session does; see
-  "Saving work" for what travels and why the rest cannot.
+- **Installed packages do not survive a save.** Everything else about a session does, restored
+  onto the same build of the image; onto a different build only the home directory comes back.
+  See "Saving work" for what travels and why the rest cannot.
 - **Boot is slow, restore is fast.** A cold systemd boot under emulation takes minutes; the
   snapshot-restore path is why a real session starts in seconds. Development boots (building a
   fresh snapshot) still pay the full cost.

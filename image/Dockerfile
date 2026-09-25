@@ -514,7 +514,9 @@ RUN du -x --max-depth=2 --block-size=1M /rootfs 2>/dev/null | sort -rn | head -2
 # actually changed. Without it every save would have to carry all of /etc
 # across a serial console at a few hundred bytes a second. This must be the
 # LAST thing that touches the rootfs, or whatever came after would look
-# "changed" in every session.
+# "changed" in every session. Its first line is the build id every save
+# records and every restore compares (#72): a digest of every path the
+# baseline covers, contents included.
 RUN set -e; chroot /rootfs /usr/local/sbin/bashtion-baseline; \
     lines=$(wc -l < /rootfs/usr/local/lib/bashtion/baseline.tsv); \
     echo "baseline: ${lines} paths"; \
@@ -540,6 +542,16 @@ RUN set -e; \
       { echo "FATAL: pack left its staging directory behind"; exit 1; }; \
     rm -f /rootfs/tmp/probe.tgz /rootfs/tmp/probe.err /rootfs/home/user/.bashtion-canary; \
     chroot /rootfs /usr/local/sbin/bashtion-baseline
+# Without a build id every archive this image saves restores home-only, even
+# onto this very image; without the format-2 marker (which pack writes when it
+# is missing, so the probe above left it), an unpacker from before #72 would
+# apply them blind. Either fails the build, not the user.
+RUN set -e; head=$(head -1 /rootfs/usr/local/lib/bashtion/baseline.tsv); \
+    printf '%s\n' "$head" | grep -Eq '^#build[[:space:]][0-9a-f]{64}$' || \
+      { echo "FATAL: baseline.tsv carries no build id (first line: $head)"; exit 1; }; \
+    echo "build id: $(printf '%s\n' "$head" | cut -f2)"; \
+    [ -s /rootfs/usr/lib/bashtion/archive-format-2 ] || \
+      { echo "FATAL: no format-2 marker: pre-#72 unpackers would accept this image's archives"; exit 1; }
 
 # ------------------------------------------------------------- disk images
 # root: measured content + a real free-space TARGET.
@@ -612,6 +624,7 @@ def sha(p):
 json.dump({
     'suite': '${SUITE}', 'snapshot': '${SNAPSHOT}',
     'kernel': open('/kver').read().strip(),
+    'build_id': open('/rootfs/usr/local/lib/bashtion/baseline.tsv').readline().split()[1],
     'artifacts': {p: {'bytes': os.path.getsize('/out/' + p), 'sha256': sha('/out/' + p)}
                   for p in os.listdir('/out')},
 }, open('/out/manifest.json', 'w'), indent=1)

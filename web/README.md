@@ -34,7 +34,10 @@ JS bundle (`out.js`) plus a `.wasm` and a pthread worker.
   goes through readline (which echoes and redisplays every line typed at a prompt whatever
   `stty -echo` says), and no marker may appear literally in the command line that emits it,
   or it matches its own echo. Blocks are acknowledged one at a time, and both directions
-  carry a byte count and a POSIX `cksum`. Behind a progress overlay.
+  carry a byte count and a POSIX `cksum`. Behind a progress overlay. The last line
+  `bashtion-unpack` prints comes back either way: on failure it is the reason, and on
+  success it says whether the whole session was restored or - for an archive from a
+  different image build - the home directory only, which the page reports as such.
 - `toolchain-extra.dockerfile` — layers xterm-pty into the engine's build image.
 - `xterm-pty.conf` — the COOP/COEP response headers cross-origin isolation requires.
 

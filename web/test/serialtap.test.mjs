@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadScript } from './load.mjs';
+import { CAPTURES, mirror } from './console-captures.mjs';
 
 // A fake xterm-pty master: it hands consumers byte chunks the way the real one
 // does, splitting at a fixed size regardless of character boundaries.
@@ -79,4 +80,223 @@ test('atPrompt rejects a console in the middle of output', () => {
   assert.equal(at('\r\nReading package lists... 47%'), false);
   assert.equal(at('\r\nuser@bashtion:~$ sudo apt install tree\r\nUnpacking tree ...'), false);
   assert.equal(at(''), false);
+});
+
+// -------------------------------------------------------------------- #69
+// window.__serial is what the guest WROTE: not what it received, and not what
+// the screen shows. Read as text - escapes stripped and CR deleted, which is
+// what atPrompt() used to do - every line-editor redraw turns into input the
+// guest never had. The streams below are real program output, captured byte
+// for byte; see console-captures.mjs for how.
+
+const flat = (raw) => tap().strip(raw).replace(/\r/g, '');
+const screenOf = (raw, geom) => tap().screen({ __serial: raw, __xterm: geom });
+const lastOf = (raw) => tap().lastLine({ __serial: raw });
+const atCap = (name, step) => at(mirror(name, step));
+
+test('root cause: the raw mirror is the line editors\' redraws, not the input', () => {
+  // QEMU's monitor reprints its whole buffer after N cursor-lefts per keystroke
+  assert.ok(flat(mirror('monitor', 'cont')).includes('(qemu) ccoconcont'));
+  // readline crossing the right margin writes the new row's first character,
+  // then CR, then writes it again: typeahead, and a byte at a time
+  assert.ok(mirror('lvm-batch-C', 'type').includes('sudo lv\rvcreate'));
+  assert.ok(flat(mirror('lvm-batch-C', 'type')).includes('sudo lvvcreate'));
+  assert.ok(flat(mirror('lvm-perchar', 'type')).includes('sudo l vcreate'));
+  // the guest's ONLCR, then xterm-pty's
+  assert.ok(mirror('lvm-batch-C').includes('created.\r\r\n'));
+});
+
+test('#69 screen() reads the monitor\'s redraws as the commands typed', () => {
+  assert.deepEqual(screenOf(mirror('monitor', 'cont')), [
+    'QEMU 10.2.1 monitor - type \'help\' for more information',
+    '(qemu) cont',
+    '(qemu)',
+  ]);
+  // a keystroke at a time: eleven redraws, one line
+  assert.deepEqual(screenOf(mirror('monitor', 'info status')).slice(-3),
+    ['(qemu) info status', 'VM status: running', '(qemu)']);
+});
+
+test('#69 screen() reads readline\'s redraw at the right margin as one lvcreate', () => {
+  const cmd = 'user@bashtion:~$ sudo pvcreate /dev/vdb && sudo vgcreate vg00 /dev/vdb && ' +
+              'sudo lvcreate -y -L 100M -n lab vg00';
+  for (const name of ['lvm-batch-C', 'lvm-perchar']) {
+    assert.equal(lastOf(mirror(name, 'type')), cmd, name);
+    // and CR CR LF is one line break, not two and not a stray CR
+    assert.deepEqual(screenOf(mirror(name)), [
+      cmd,
+      '  Physical volume "/dev/vdb" successfully created.',
+      '  Volume group "vg00" successfully created',
+      '  Logical volume "lab" created.',
+      'user@bashtion:~$',
+    ], name);
+  }
+});
+
+test('#69 atPrompt: a line typed and then erased is idle again', () => {
+  // Raw, every one of these still reads as typed: the erase is BS and ESC[K,
+  // or cursor motion and a redraw, and the raw mirror carries out neither.
+  // That starved the resize sync until the next command was run.
+  for (const [name, typed, erased] of [
+    ['erase', 'type', 'bs'],
+    ['kill-line', 'type', 'ctrl-u'],
+    ['history', 'up', 'down'],
+    ['wrapped-kill', 'type', 'ctrl-u'],
+    ['wrapped-kill-C', 'type', 'ctrl-u'],
+    ['ctrl-c', 'type', 'ctrl-c'],
+  ]) {
+    assert.equal(atCap(name, typed), false, `${name}/${typed}`);
+    assert.equal(atCap(name, erased), true, `${name}/${erased}`);
+    assert.equal(lastOf(mirror(name, erased)), 'user@bashtion:~$', `${name}/${erased}`);
+  }
+  assert.equal(atCap('clear', 'clear'), true);
+});
+
+test('#69 atPrompt: the wrapped tail of a half-typed line is not a prompt', () => {
+  // `echo aaa…a x$ ` crosses the margin so that its second row reads `x$ `.
+  // Home then End has readline move back down onto that row with an LF (and,
+  // in the C locale, reprint it). Read raw, the last line was then `x$ ` - and
+  // the page would type `stty rows …` into the middle of the command and
+  // press Enter.
+  for (const name of ['home-end', 'home-end-C']) {
+    for (const step of ['type', 'home', 'end']) {
+      assert.equal(atCap(name, step), false, `${name}/${step}`);
+    }
+    assert.equal(lastOf(mirror(name)), 'user@bashtion:~$ echo ' + 'a'.repeat(58) + 'x$', name);
+  }
+});
+
+test('#69 atPrompt: `# ` typed in an editor is not a root prompt', () => {
+  // vim and nano address the cursor directly. On the screen the cursor's line
+  // is the file's first line, `# ` with nothing after it - prompt-shaped. What
+  // rules it out is the status line and the shortcut bar below it.
+  for (const name of ['vim', 'nano']) {
+    assert.equal(lastOf(mirror(name, 'comment')), '#', name);
+    assert.equal(atCap(name, 'comment'), false, name);
+  }
+});
+
+test('#69 atPrompt follows apt\'s progress bar through its scroll region', () => {
+  // apt pins the bar to the bottom row by narrowing the scroll region above
+  // it, and redraws it by absolute address between a save and a restore of
+  // the cursor. Output scrolls inside the region; the bar never moves.
+  const raw = mirror('apt');
+  const mid = raw.slice(0, raw.indexOf('Setting up tree'));
+  const during = screenOf(mid);
+  assert.equal(at(mid), false);
+  assert.deepEqual(during.slice(-3).map((l) => l.replace(/█+/, '█')),
+    ['Unpacking tree (2.3.1-1) ...', '', 'Progress: [ 40%] [█▏                                  ]']);
+  assert.equal(during.filter((l) => l.startsWith('Progress:')).length, 1,
+    'an earlier bar scrolled up into the output');
+  // done: the region is reset, the bar erased, and the prompt is back
+  assert.equal(at(raw), true);
+  assert.deepEqual(screenOf(raw).slice(-4), [
+    'Preparing to unpack .../tree_2.3.1-1_arm64.deb ...',
+    'Unpacking tree (2.3.1-1) ...',
+    'Setting up tree (2.3.1-1) ...',
+    'root@bashtion:~#',
+  ]);
+});
+
+test('#69 atPrompt through the restore page\'s resume', () => {
+  // (qemu) is not a shell prompt; the guest's is, once Enter has woken it.
+  assert.equal(atCap('monitor', 'ctrl-a c'), false);
+  assert.equal(atCap('monitor', 'cont'), false);
+  // the mux's newline on switching back (captured), then the guest's answer
+  // to Enter - a newline and its prompt, through both ONLCRs (written here)
+  const woken = mirror('monitor', 'cont') + '\r\r\n' + '\r\r\nuser@bashtion:~$ ';
+  assert.equal(at(woken), true);
+  assert.equal(lastOf(woken), 'user@bashtion:~$');
+});
+
+test('#69 the live screen is the replay of the mirror, however the bytes are chunked', () => {
+  // install() keeps a model in step with the mirror rather than replaying the
+  // whole session on every question. Escape sequences and UTF-8 straddle the
+  // chunk boundaries here; the mirror itself must stay raw.
+  const enc = new TextEncoder();
+  for (const name of Object.keys(CAPTURES)) {
+    const raw = mirror(name);
+    for (const n of [1, 3, 7, 4096]) {
+      const win = {};
+      const master = fakeMaster(n);
+      const t = tap();
+      t.install(master, win);
+      master.emit(enc.encode(raw));
+      assert.equal(win.__serial, raw, `${name}/${n}: the mirror is not raw`);
+      assert.deepEqual(t.screen(win), t.screen({ __serial: raw }), `${name}/${n}`);
+      assert.equal(t.atPrompt(win), t.atPrompt({ __serial: raw }), `${name}/${n}`);
+    }
+  }
+});
+
+test('the live screen draws each chunk at the geometry it arrived at', () => {
+  // 100 columns of x at 80 wide is two rows; the terminal then grows to 120
+  // and the cursor goes up a row. Replayed at 120 from the start, the x's
+  // were one row and the Z lands at its end instead.
+  const enc = new TextEncoder();
+  const win = { __xterm: { cols: 80, rows: 24 } };
+  const master = fakeMaster(4096);
+  const t = tap();
+  t.install(master, win);
+  master.emit(enc.encode('x'.repeat(100)));
+  win.__xterm.cols = 120;
+  master.emit(enc.encode('\x1b[AZ'));
+  assert.deepEqual(t.screen(win), ['x'.repeat(20) + 'Z' + 'x'.repeat(79)]);
+  assert.deepEqual(t.screen({ __serial: win.__serial, __xterm: win.__xterm }),
+    ['x'.repeat(100) + 'Z']);
+});
+
+test('the live screen starts again from the mirror if the mirror is replaced', () => {
+  const enc = new TextEncoder();
+  const win = {};
+  const master = fakeMaster(64);
+  const t = tap();
+  t.install(master, win);
+  master.emit(enc.encode('some output\r\r\n'));
+  win.__serial = 'user@bashtion:~$ ';
+  assert.equal(t.atPrompt(win), true);
+  master.emit(enc.encode('ls'));
+  assert.equal(win.__serial, 'user@bashtion:~$ ls');
+  assert.deepEqual(t.screen(win), ['user@bashtion:~$ ls']);
+});
+
+// ------------------------------------------------------------ the model
+test('the deferred wrap: a full row wraps on the next character, not before', () => {
+  const x80 = 'x'.repeat(80);
+  // a line exactly as wide as the terminal, then CR LF: no blank line after it
+  assert.deepEqual(screenOf(x80 + '\r\r\nnext'), [x80, 'next']);
+  // one more character wraps, and the two rows are one line
+  assert.deepEqual(screenOf(x80 + 'y'), [x80 + 'y']);
+  // CR at the margin has not wrapped yet: it returns to the start of the SAME row
+  assert.deepEqual(screenOf(x80 + '\rZ'), ['Z' + x80.slice(1)]);
+  // BS from the margin lands on the second-last column, as xterm.js does
+  assert.deepEqual(screenOf(x80 + '\bZ'), [x80.slice(0, 78) + 'Zx']);
+  // and the wrap point is the terminal's width
+  assert.deepEqual(screenOf('x'.repeat(100) + '\rZ'), [x80 + 'Z' + 'x'.repeat(19)]);
+  assert.deepEqual(screenOf('x'.repeat(100) + '\rZ', { cols: 120, rows: 24 }), ['Z' + 'x'.repeat(99)]);
+});
+
+test('autowrap off (SeaBIOS sends ESC[?7l) overwrites the last column; a reset turns it back on', () => {
+  assert.deepEqual(screenOf('\x1b[?7l' + 'a'.repeat(79) + 'bcd'), ['a'.repeat(79) + 'd']);
+  assert.deepEqual(screenOf('\x1b[?7l\x1bc' + 'a'.repeat(81)), ['a'.repeat(81)]);
+  // ... and so does a soft reset (DECSTR), which is what systemd's tty reset sends
+  assert.deepEqual(screenOf('\x1b[?7l\x1b[!p' + 'a'.repeat(81)), ['a'.repeat(81)]);
+  // what SeaBIOS actually sent: RIS, autowrap off, clear - the monitor above it is gone
+  assert.equal(screenOf(mirror('monitor', 'seabios'))[0],
+    'SeaBIOS (version 1.17.0-debian-1.17.0-1ubuntu1)');
+});
+
+test('wide characters take two cells, combining ones none', () => {
+  // two backspaces land on 本's first half; overwriting half of it blanks it
+  assert.deepEqual(screenOf('日本\b\bx'), ['日x']);
+  // a wide character that no longer fits wraps whole
+  assert.deepEqual(screenOf('a'.repeat(79) + '日'), ['a'.repeat(79) + '日']);
+  assert.deepEqual(screenOf('éx\bY'), ['éY']);
+});
+
+test('OSC, DCS and the other strings are skipped whole, whichever way they end', () => {
+  // 26.04's shell integration brackets the prompt; vim probes with a DCS
+  const ctx = '\x1b]3008;start=0f3c;user=user;hostname=bashtion;type=shell\x1b\\';
+  assert.equal(at('\r\n' + ctx + 'user@bashtion:~$ \x1b]0;user@bashtion: ~\x07'), true);
+  assert.deepEqual(screenOf('a\x1bPzz\x1b\\b\x1b_apc\x1b\\c'), ['abc']);
 });

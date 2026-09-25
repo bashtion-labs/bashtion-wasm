@@ -379,6 +379,9 @@ hl() {  # hl [TARGET]: /etc/bashtion-hl-{a,b,c}, a hard-linked to TARGET if give
     printf 'same\n' > /etc/bashtion-hl-$f && touch -d @1700000000 /etc/bashtion-hl-$f
   done
   [ -z "${1:-}" ] || ln -f /etc/bashtion-hl-a "/etc/bashtion-hl-$1"
+  # making them moves /etc's own mtime, which the baseline keeps in whole
+  # seconds: pinned, or calls either side of a second's turn differ in it
+  touch -d @1700000000 /etc
   bashtion-baseline >/dev/null
   bid; rows > "/tmp/rows-hl${1:-}"
 }

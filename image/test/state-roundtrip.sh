@@ -4,7 +4,8 @@
 # container: baseline the "image", make the kinds of change the bug report
 # named (a file in $HOME, one in ~/persist, a directory in /opt, a new user and
 # group, an ACL, a cron job, a deleted /etc file), pack, undo everything, then
-# unpack and check it all came back.
+# unpack and check it all came back. Then the same again across a rebuild of
+# the "image", where only the home directory may come back (#72).
 #
 #   usage: image/test/state-roundtrip.sh              # runs itself in docker
 #          IN_CONTAINER=1 image/test/state-roundtrip.sh
@@ -14,7 +15,10 @@ if [ "${IN_CONTAINER:-}" != 1 ]; then
   HERE="$(cd "$(dirname "$0")/../.." && pwd)"
   # native arch on purpose: this exercises python/tar/acl semantics, not the
   # guest's architecture, and amd64-under-emulation has no statx for tar.
+  # SYS_ADMIN, and no AppArmor veto on mount(2), so the #70 checks can give
+  # pack a private mount namespace with a read-only root.
   exec docker run --rm -e IN_CONTAINER=1 \
+    --cap-add SYS_ADMIN --security-opt apparmor=unconfined \
     -v "$HERE:/src:ro" ubuntu:26.04 /bin/bash -c \
     'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq python3 acl cron >/dev/null 2>&1 && exec /src/image/test/state-roundtrip.sh'
 fi
@@ -24,9 +28,20 @@ install -D -m755 "$SEED/usr/local/lib/bashtion/state.py" /usr/local/lib/bashtion
 for f in pack unpack baseline; do
   install -D -m755 "$SEED/usr/local/sbin/bashtion-$f" "/usr/local/sbin/bashtion-$f"
 done
+MARKER=/usr/lib/bashtion/archive-format-2    # in every archive, never on /
 
 fail=0
 ck() { if eval "$2" >/dev/null 2>&1; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
+# this build's id: the first line of the baseline is "#build<TAB><id>"
+bid() { head -1 /usr/local/lib/bashtion/baseline.tsv | sed -n 's/^#build\t\([0-9a-f]\{64\}\)$/\1/p'; }
+# a field of the session.json inside an archive
+meta() { tar xzOf "$1" var/lib/bashtion/session.json | python3 -c "import json,sys; print(json.load(sys.stdin).get('$2'))"; }
+# the id state.py computes for the tree as it is now, from the baseline's rows
+recompute() {
+  python3 -B -c "import sys; sys.path.insert(0, '/usr/local/lib/bashtion'); import state
+base, _ = state.read_baseline()
+print(state.identity([(p, chr(9).join(v)) for p, v in base.items()]))"
+}
 
 # match the guest: uid 1000 is `user`
 userdel -r ubuntu >/dev/null 2>&1 || true
@@ -37,6 +52,8 @@ printf 'original\n' > /etc/bashtion-config
 
 echo "==> baseline"
 bashtion-baseline
+ck "#72 the baseline carries a build id"          "[ -n \"\$(bid)\" ]"
+ck "#72 ...which describes the tree it was taken of" "[ \"\$(recompute)\" = \"\$(bid)\" ]"
 
 echo "==> make a session's worth of change"
 echo canary-home   > /home/user/marker.txt
@@ -54,6 +71,7 @@ rm -f /etc/bashtion-will-be-deleted
 echo "==> pack"
 bashtion-pack > /tmp/session.tgz
 ls -l /tmp/session.tgz
+ck "#70 pack cleans up its staging directory" "! compgen -G '/tmp/bashtion-pack-*'"
 
 echo "==> undo everything (as a reloaded page would)"
 rm -rf /home/user/marker.txt /home/user/share/marker.txt /opt/example
@@ -65,7 +83,9 @@ printf 'baseline\n' > /etc/bashtion-will-be-deleted
 printf 'original\n' > /etc/bashtion-config
 
 echo "==> unpack"
-bashtion-unpack < /tmp/session.tgz
+# gone before the restore, so a marker afterwards could only have come from it
+rm -f "$MARKER"
+bashtion-unpack < /tmp/session.tgz 2>&1 | tee /tmp/full.out
 
 echo "==> check"
 ck "#50 home file restored"            "grep -qx canary-home /home/user/marker.txt"
@@ -80,6 +100,33 @@ ck "#50 edited /etc file restored"     "grep -q edited-by-user /etc/bashtion-con
 ck "#50 deletion re-applied"           "! test -e /etc/bashtion-will-be-deleted"
 ck "#50 home ownership preserved"      "[ \"\$(stat -c %U /home/user/marker.txt)\" = user ]"
 ck "#50 cron job mode preserved"       "[ \"\$(stat -c %a /var/spool/cron/crontabs/user)\" = 600 ]"
+
+ck "#72 pack records this build's id"    "[ \"\$(meta /tmp/session.tgz build)\" = \"\$(bid)\" ]"
+ck "#72 ...in the format that has one"   "[ \"\$(meta /tmp/session.tgz format)\" = 2 ]"
+ck "#72 a same-build archive restores in full" \
+   "tail -1 /tmp/full.out | grep -q '^bashtion-unpack: restored; '"
+ck "#72 pack adds the marker a format-1 unpacker refuses" \
+   "tar tzf /tmp/session.tgz | grep -x ${MARKER#/}"
+ck "#72 ...and unpack never writes it"   "! test -e $MARKER"
+# ...nor does pack: the marker is staged in /tmp with session.json, so nothing
+# on / can keep it out of an archive. Packed from /, one that had been deleted
+# dropped out silently - tar skips what it cannot read - and a full root would
+# not let it be put back.
+bashtion-pack > /tmp/remarked.tgz 2>/dev/null
+ck "#72 pack writes no marker to /"       "! test -e $MARKER"
+ck "#72 ...yet its archive carries one"   "tar tzf /tmp/remarked.tgz | grep -x ${MARKER#/}"
+ck "#72 ...which says what it is"         "tar xzOf /tmp/remarked.tgz ${MARKER#/} | grep 'format 2'"
+# Whatever is at the marker's path makes no difference now - even a socket,
+# for which tar packs nothing ("socket ignored", and still exit 0).
+mkdir -p "${MARKER%/*}"
+python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$MARKER"
+bashtion-pack > /tmp/resocket.tgz 2>/dev/null
+ck "#72 a socket at the marker's path is left alone" "test -S $MARKER"
+ck "#72 ...and the archive carries the marker, as a file" \
+   "tar tvzf /tmp/resocket.tgz | grep -E '^-.* ${MARKER#/}\$'"
+ck "#72 ...which a format-1 unpacker refuses" \
+   "! python3 /src/image/test/fixtures/state-format1.py unpack < /tmp/resocket.tgz"
+rm -f "$MARKER"
 
 echo "==> archive stays small (only changed system files)"
 size=$(stat -c %s /tmp/session.tgz)
@@ -99,8 +146,10 @@ ck "nothing was written outside the session" "! test -e /usr/bin/evil"
 echo "==> an archive whose deletion list points outside the session is refused"
 mkdir -p /tmp/eviltree/home/user /tmp/eviltree/var/lib/bashtion
 echo harmless > /tmp/eviltree/home/user/harmless
-cat > /tmp/eviltree/var/lib/bashtion/session.json <<'JSON'
-{"format":1,"created":0,"deleted":[
+# It claims THIS build, or the list would never be replayed at all (#72) and
+# the containment below would go untested.
+cat > /tmp/eviltree/var/lib/bashtion/session.json <<JSON
+{"format":2,"build":"$(bid)","created":0,"deleted":[
   "/etc/../usr/bin/bashtion-sentinel",
   "/etc/../usr/local/lib/bashtion/state.py",
   "/etc/../../home/user/keep-me.txt",
@@ -128,12 +177,340 @@ bashtion-unpack < /tmp/deldir.tgz 2>&1 | sed 's/^/     /'
 ck "the directory is gone, not an empty skeleton" "! test -e /opt/pkg"
 
 echo "==> an archive with no deletion list does not replay a stale one"
-printf 'restored\n' > /etc/bashtion-stale
-mkdir -p /tmp/plain/etc && printf 'restored\n' > /tmp/plain/etc/bashtion-stale
-# /var/lib/bashtion/session.json is still on disk from the previous unpack
-( cd /tmp/plain && printf '%s\0' etc/bashtion-stale     | tar czf /tmp/plain.tgz --no-recursion --null -T - )
-rm -f /etc/bashtion-stale
+# The session.json left on disk by an earlier restore lists a file that exists.
+# An archive that carries no list of its own must not pick that one up.
+printf '{"format":2,"build":"%s","deleted":["/etc/bashtion-stale"]}' "$(bid)" \
+  > /var/lib/bashtion/session.json
+printf 'still here\n' > /etc/bashtion-stale
+mkdir -p /tmp/plain/home/user && printf 'restored\n' > /tmp/plain/home/user/plain.txt
+( cd /tmp/plain && printf '%s\0' home/user/plain.txt \
+    | tar czf /tmp/plain.tgz --no-recursion --null -T - )
 bashtion-unpack < /tmp/plain.tgz 2>&1 | sed 's/^/     /'
-ck "the archive's own file survives an unrelated stale list" "test -s /etc/bashtion-stale"
+ck "the archive's own file is restored"               "grep -qx restored /home/user/plain.txt"
+ck "an unrelated stale list on disk is not replayed"  "test -s /etc/bashtion-stale"
+
+# --- #72: an archive applies its system half only to the build it came from --
+# Rewrite an archive's session.json as an older (or newer) bashtion would have
+# written it. Every other member is carried over untouched.
+remeta() {
+  python3 - "$@" <<'PY'
+import io, json, sys, tarfile
+src, dst, expr = sys.argv[1:4]
+with tarfile.open(src) as i, tarfile.open(dst, 'w:gz', format=tarfile.PAX_FORMAT) as o:
+    for m in i:
+        f = i.extractfile(m) if m.isfile() else None
+        if m.name == 'var/lib/bashtion/session.json':
+            meta = json.load(f)
+            exec(expr, {'m': meta})
+            b = json.dumps(meta).encode()
+            m.size, f = len(b), io.BytesIO(b)
+        o.addfile(m, f)
+PY
+}
+# unpack, keeping its output and its status without tripping set -e
+unpack() {
+  if bashtion-unpack < "$1" > "$2" 2>&1; then rc=0; else rc=$?; fi
+  sed 's/^/     /' "$2"
+}
+
+echo "==> #72 an archive from an older build restores home only"
+# Build 1 ships two files; the session edits one and deletes the other.
+printf 'shipped-in-v1\n' > /etc/bashtion-fixed
+printf 'shipped-in-v1\n' > /etc/bashtion-dropped
+bashtion-baseline
+v1=$(bid)
+echo 'stale-edit' >> /etc/bashtion-fixed
+rm -f /etc/bashtion-dropped
+echo home-v1  > /home/user/v1.txt
+echo share-v1 > /home/user/share/v1.txt
+chown user:user /home/user/v1.txt /home/user/share/v1.txt
+bashtion-pack > /tmp/v1.tgz 2>/dev/null
+printf '{"marker":"untouched"}' > /var/lib/bashtion/session.json
+ck "#72 (the archive does carry the stale system file)" \
+   "tar tzf /tmp/v1.tgz | grep -x etc/bashtion-fixed"
+ck "#72 (...and the deletion)" \
+   "[ \"\$(meta /tmp/v1.tgz deleted)\" = \"['/etc/bashtion-dropped']\" ]"
+# Build 2 fixes that same file and needs the deleted one. Then a reloaded page.
+rm -f /home/user/v1.txt /home/user/share/v1.txt
+printf 'fixed-in-v2\n' > /etc/bashtion-fixed
+printf 'needed-in-v2\n' > /etc/bashtion-dropped
+bashtion-baseline
+v2=$(bid)
+ck "#72 a rebuild that changes a system file changes the build id" "[ $v1 != $v2 ]"
+unpack /tmp/v1.tgz /tmp/v1.out
+ck "#72 the restore succeeds"                         "[ $rc = 0 ]"
+ck "#72 the home file comes back"                     "grep -qx home-v1 /home/user/v1.txt"
+ck "#72 ~/share comes back"                           "grep -qx share-v1 /home/user/share/v1.txt"
+ck "#72 home ownership preserved"                     "[ \"\$(stat -c %U /home/user/v1.txt)\" = user ]"
+ck "#72 the newer build's fix is NOT reverted"        "[ \"\$(cat /etc/bashtion-fixed)\" = fixed-in-v2 ]"
+ck "#72 the old build's deletion is NOT replayed"     "[ \"\$(cat /etc/bashtion-dropped)\" = needed-in-v2 ]"
+ck "#72 its session.json is not extracted either"     "grep -q untouched /var/lib/bashtion/session.json"
+ck "#72 the warning names the archive's build"        "grep -q 'archive saved on build: $v1' /tmp/v1.out"
+ck "#72 ...and this one"                              "grep -q 'this machine is build:  $v2' /tmp/v1.out"
+ck "#72 the last line says home only" \
+   "tail -1 /tmp/v1.out | grep -Eq '^bashtion-unpack: restored home only; [0-9]+ system paths and 1 deletions not applied'"
+
+echo "==> #72 an archive that names no build restores home only"
+# Exactly what every build before #72 saved: format 1, and no build.
+echo 'edited-on-v2' >> /etc/bashtion-fixed
+echo home-legacy > /home/user/legacy.txt
+bashtion-pack > /tmp/v2.tgz 2>/dev/null
+remeta /tmp/v2.tgz /tmp/legacy.tgz "m['format'] = 1; del m['build']"
+rm -f /home/user/legacy.txt
+printf 'fixed-in-v2\n' > /etc/bashtion-fixed
+unpack /tmp/legacy.tgz /tmp/legacy.out
+ck "#72 the restore succeeds"                         "[ $rc = 0 ]"
+ck "#72 its home file comes back"                     "grep -qx home-legacy /home/user/legacy.txt"
+ck "#72 its system edit is NOT applied, even on the same build" \
+   "[ \"\$(cat /etc/bashtion-fixed)\" = fixed-in-v2 ]"
+ck "#72 it says it cannot tell"                       "grep -q 'does not record which build' /tmp/legacy.out"
+ck "#72 the last line says home only" \
+   "tail -1 /tmp/legacy.out | grep -q '^bashtion-unpack: restored home only; '"
+# ...while the very same archive, still naming its build, applies in full
+rm -f /home/user/legacy.txt
+unpack /tmp/v2.tgz /tmp/v2.out
+ck "#72 (control: the same archive naming this build applies in full)" \
+   "grep -q edited-on-v2 /etc/bashtion-fixed && tail -1 /tmp/v2.out | grep -q '^bashtion-unpack: restored; '"
+
+# tar selects members by exact name, and `tar czf x.tgz ./home` - the obvious
+# way to make one by hand - spells every member with a leading ./
+mkdir -p /tmp/dotted/home/user /tmp/dotted/etc
+echo dotted > /tmp/dotted/home/user/dotted.txt
+echo dotted > /tmp/dotted/etc/bashtion-dotted
+( cd /tmp/dotted && tar czf /tmp/dotted.tgz ./home/user/dotted.txt ./etc/bashtion-dotted )
+unpack /tmp/dotted.tgz /tmp/dotted.out
+ck "#72 a ./-spelled archive restores its home file"  "[ $rc = 0 ] && grep -qx dotted /home/user/dotted.txt"
+ck "#72 ...and still not its system file"             "! test -e /etc/bashtion-dotted"
+
+echo "==> #72 an archive this build cannot read is refused, and nothing is written"
+refused() {  # refused NAME ARCHIVE [SAYS]: the unpack fails and writes nothing at all
+  rm -f /home/user/legacy.txt
+  printf 'fixed-in-v2\n' > /etc/bashtion-fixed
+  printf '{"marker":"untouched"}' > /var/lib/bashtion/session.json
+  unpack "$2" /tmp/refused.out
+  ck "#72 $1: refused"                                "[ $rc != 0 ]"
+  ck "#72 $1: says ${3:-nothing was restored}"        "tail -1 /tmp/refused.out | grep -q '${3:-nothing was restored}'"
+  ck "#72 $1: no home file written"                   "! test -e /home/user/legacy.txt"
+  ck "#72 $1: no system file written"                 "[ \"\$(cat /etc/bashtion-fixed)\" = fixed-in-v2 ]"
+  ck "#72 $1: session.json not written"               "grep -q untouched /var/lib/bashtion/session.json"
+}
+remeta /tmp/v2.tgz /tmp/future.tgz "m['format'] = 3"
+refused "a newer format" /tmp/future.tgz
+ck "#72 a newer format: says so"                      "tail -1 /tmp/refused.out | grep -q 'newer bashtion (format 3'"
+remeta /tmp/v2.tgz /tmp/weird.tgz "m['format'] = '2'"
+refused "a format that is not a number" /tmp/weird.tgz
+remeta /tmp/v2.tgz /tmp/noformat.tgz "del m['format']"
+refused "no format at all" /tmp/noformat.tgz
+python3 - <<'PY'
+import io, tarfile
+with tarfile.open('/tmp/v2.tgz') as i, tarfile.open('/tmp/garbled.tgz', 'w:gz') as o:
+    for m in i:
+        f = i.extractfile(m) if m.isfile() else None
+        if m.name == 'var/lib/bashtion/session.json':
+            m.size, f = 9, io.BytesIO(b'{"format"')
+        o.addfile(m, f)
+PY
+refused "an unreadable session.json" /tmp/garbled.tgz
+# The marker says format 2 or later, and a format-2 pack always writes
+# session.json beside it: without one the archive is damaged, not legacy.
+python3 - <<'PY'
+import tarfile
+with tarfile.open('/tmp/v2.tgz') as i, tarfile.open('/tmp/nometa.tgz', 'w:gz') as o:
+    for m in i:
+        if m.name != 'var/lib/bashtion/session.json':
+            o.addfile(m, i.extractfile(m) if m.isfile() else None)
+PY
+refused "a marked archive with no session.json" /tmp/nometa.tgz
+# The original home-only download: members relative to the home directory.
+# Those are refused by the name check, as they have been since format 1.
+mkdir -p /tmp/prefmt1 && echo home-legacy > /tmp/prefmt1/legacy.txt
+tar czf /tmp/prefmt1.tgz -C /tmp/prefmt1 .
+refused "a pre-format-1 home-only archive" /tmp/prefmt1.tgz "refusing path outside the session"
+
+# Archives spelled so that a name check which only strips leading dots and
+# slashes, or reads session.json recursively, would let them through.
+mktar() {  # mktar OUT NAME[=CONTENT] ...: members exactly as named; NAME/ is a directory
+  python3 - "$@" <<'PY'
+import io, sys, tarfile
+with tarfile.open(sys.argv[1], 'w:gz') as t:
+    for spec in sys.argv[2:]:
+        name, _, body = spec.partition('=')
+        i = tarfile.TarInfo(name.rstrip('/'))
+        i.uid = i.gid = 1000
+        if name.endswith('/'):
+            i.type, i.mode = tarfile.DIRTYPE, 0o755
+            t.addfile(i)
+        else:
+            b = body.encode()
+            i.size, i.mode = len(b), 0o644
+            t.addfile(i, io.BytesIO(b))
+PY
+}
+ok_meta="{\"format\":2,\"build\":\"$(bid)\"}"
+mktar /tmp/alias.tgz "var/lib/bashtion/session.json=$ok_meta" \
+      'var/lib/bashtion/./session.json={"format":3}' home/user/legacy.txt=alias
+refused "a second session.json spelled differently" /tmp/alias.tgz 'refusing path'
+mktar /tmp/sdir.tgz var/lib/bashtion/session.json/ \
+      "var/lib/bashtion/session.json/x.json=$ok_meta" home/user/legacy.txt=sdir
+refused "a session.json that is a directory" /tmp/sdir.tgz 'unreadable'
+mktar /tmp/dots.tgz .../home/user/legacy.txt=dots
+refused "a .../home/user spelling" /tmp/dots.tgz 'refusing path'
+ck "#72 a .../home/user spelling: nothing under /..." "! test -e /..."
+
+echo "==> #72 the build id sees what a file says, not only its size and mtime"
+rows() { tail -n +2 /usr/local/lib/bashtion/baseline.tsv; }
+printf 'allow=0\n' > /etc/bashtion-same && touch -d @1700000000 /etc/bashtion-same
+bashtion-baseline >/dev/null
+a=$(bid); rows > /tmp/rows-a
+printf 'allow=1\n' > /etc/bashtion-same && touch -d @1700000000 /etc/bashtion-same
+bashtion-baseline >/dev/null
+b=$(bid); rows > /tmp/rows-b
+ck "#72 (the baseline's own rows cannot tell those two apart)" "cmp -s /tmp/rows-a /tmp/rows-b"
+ck "#72 a rebuild that changes only what a file says changes the id" "[ -n \"$a\" ] && [ $a != $b ]"
+chown 1000:1000 /etc/bashtion-same
+bashtion-baseline >/dev/null
+c=$(bid); rows > /tmp/rows-c
+ck "#72 (...nor tell an owner change)"                "cmp -s /tmp/rows-b /tmp/rows-c"
+ck "#72 a rebuild that changes only an owner changes the id" "[ -n \"$c\" ] && [ $b != $c ]"
+order_free() {
+  python3 -B -c "import sys; sys.path.insert(0, '/usr/local/lib/bashtion'); import state
+base, ident = state.read_baseline()
+rows = [(p, chr(9).join(v)) for p, v in base.items()]
+sys.exit(0 if state.identity(rows) == state.identity(rows[::-1]) == ident else 1)"
+}
+ck "#72 the id does not depend on the order a directory is listed in" "order_free"
+xattr_collision() {
+  python3 -B -c "import os, sys; sys.path.insert(0, '/usr/local/lib/bashtion'); import state
+for f in ('/tmp/xa1', '/tmp/xa2'):
+    open(f, 'w').write('same')
+    os.utime(f, (1700000000, 1700000000))
+os.setxattr('/tmp/xa1', 'user.a', b'x' + bytes([0]) + b'user.b=y')
+os.setxattr('/tmp/xa2', 'user.a', b'x')
+os.setxattr('/tmp/xa2', 'user.b', b'y')
+sys.exit(0 if state.fingerprint('/tmp/xa1') != state.fingerprint('/tmp/xa2') else 1)"
+}
+ck "#72 one xattr cannot pass for two"                "xattr_collision"
+# Three identical files, same second: all apart, then a linked to b, then a
+# linked to c. No path's own row or fingerprint changes along the way.
+hl() {  # hl [TARGET]: /etc/bashtion-hl-{a,b,c}, a hard-linked to TARGET if given
+  rm -f /etc/bashtion-hl-a /etc/bashtion-hl-b /etc/bashtion-hl-c
+  for f in a b c; do
+    printf 'same\n' > /etc/bashtion-hl-$f && touch -d @1700000000 /etc/bashtion-hl-$f
+  done
+  [ -z "${1:-}" ] || ln -f /etc/bashtion-hl-a "/etc/bashtion-hl-$1"
+  # making them moves /etc's own mtime, which the baseline keeps in whole
+  # seconds: pinned, or calls either side of a second's turn differ in it
+  touch -d @1700000000 /etc
+  bashtion-baseline >/dev/null
+  bid; rows > "/tmp/rows-hl${1:-}"
+}
+d=$(hl); e=$(hl b); f=$(hl c)
+ck "#72 (the baseline's own rows cannot tell hard links apart)" \
+   "cmp -s /tmp/rows-hl /tmp/rows-hlb && cmp -s /tmp/rows-hlb /tmp/rows-hlc"
+ck "#72 a rebuild that only hard-links two files changes the id" "[ -n \"$d\" ] && [ $d != $e ]"
+ck "#72 ...and so does linking a different pair"      "[ -n \"$f\" ] && [ $e != $f ] && [ $d != $f ]"
+ck "#72 ...while the same links, made afresh, give the same id" "[ \"\$(hl c)\" = $f ]"
+ck "#72 ...in whatever order the paths come"          "order_free"
+rm -f /etc/bashtion-hl-a /etc/bashtion-hl-b /etc/bashtion-hl-c
+
+echo "==> #72 a format-1 unpacker - every build before #72 - refuses a format-2 archive"
+# image/test/fixtures/state-format1.py is that unpacker, byte for byte: it
+# never reads format or build, so the marker member is all that stops it.
+rm -f /home/user/legacy.txt
+printf 'fixed-in-v2\n' > /etc/bashtion-fixed
+printf '{"marker":"untouched"}' > /var/lib/bashtion/session.json
+if python3 /src/image/test/fixtures/state-format1.py unpack < /tmp/v2.tgz > /tmp/old.out 2>&1
+then rc=0; else rc=$?; fi
+sed 's/^/     /' /tmp/old.out
+ck "#72 format-1 unpacker: refused"                   "[ $rc != 0 ]"
+ck "#72 format-1 unpacker: because of the marker"     "grep -q 'outside the session.*archive-format-2' /tmp/old.out"
+ck "#72 format-1 unpacker: no home file written"      "! test -e /home/user/legacy.txt"
+ck "#72 format-1 unpacker: no system file written"    "[ \"\$(cat /etc/bashtion-fixed)\" = fixed-in-v2 ]"
+ck "#72 format-1 unpacker: session.json not written"  "grep -q untouched /var/lib/bashtion/session.json"
+
+# --- #70: a save has to work when / is full ---------------------------------
+# pack used to write session.json into /var/lib/bashtion before archiving it,
+# so on a full root filesystem the save - the one thing a user needs at that
+# moment - died with a traceback. Run it in a private mount namespace whose /
+# is READ-ONLY and whose /tmp is a fresh tmpfs. That refuses every write a
+# full disk would, plus the zero-byte ones a full disk still lets through, so
+# anything pack writes outside /tmp fails here. (image/test/guest-check.py
+# does the literal version: it fills the guest's / to 100% and saves.)
+#
+#   pack_in_ns SIZE room|full [nomarker]
+#                               stdout/stderr are pack's; fd 3 gets whatever
+#                               pack left behind in its /tmp (and, with
+#                               nomarker, in the marker's directory); exit 99
+#                               means the namespace itself could not be set up.
+#                               nomarker: #72's format-2 marker is not on / and
+#                               its directory is a full tmpfs, where a file can
+#                               be created but not filled, as on a full ext4
+pack_in_ns() {
+  [ "${3:-}" != nomarker ] || mkdir -p "${MARKER%/*}"
+  unshare --mount sh -c '
+    mount -o remount,bind,ro / && mount -t tmpfs -o size="$1" tmpfs /tmp || exit 99
+    if [ "$2" = full ]; then head -c 1048576 /dev/zero > /tmp/fill 2>/dev/null; fi
+    if [ "$3" = nomarker ]; then
+      mount -t tmpfs -o size=4k tmpfs /usr/lib/bashtion || exit 99
+      head -c 1048576 /dev/zero > /usr/lib/bashtion/fill 2>/dev/null
+    fi
+    bashtion-pack; rc=$?
+    ls -A /tmp | grep -vx fill >&3
+    [ "$3" != nomarker ] || ls -A /usr/lib/bashtion | grep -vx fill >&3
+    exit $rc' sh "$@"
+}
+
+echo "==> #70 pack writes nothing to / (a save must work on a full disk)"
+printf 'baseline\n' > /etc/bashtion-70-gone
+bashtion-baseline >/dev/null
+rm -f /etc/bashtion-70-gone
+echo canary-70 > /home/user/marker-70.txt
+rm -f /var/lib/bashtion/session.json   # the image no longer ships one either
+rc=0; pack_in_ns 8m room > /tmp/ro.tgz 2> /tmp/ro.err 3> /tmp/ro.left || rc=$?
+sed 's/^/     /' /tmp/ro.err
+ck "#70 test setup: a private read-only root (rc=$rc)" "[ $rc != 99 ]"
+ck "#70 pack succeeds with nowhere to write but /tmp" "[ $rc = 0 ] && test -s /tmp/ro.tgz"
+ck "#70 pack did not write session.json in place"      "! test -e /var/lib/bashtion/session.json"
+ck "#70 its staging directory is gone afterwards"       "! test -s /tmp/ro.left"
+# listed to a file first: under pipefail, `! tar | grep -q` passes when grep
+# exits on a match and tar dies of SIGPIPE
+lrc=0; tar tzf /tmp/ro.tgz > /tmp/ro.list 2>/dev/null || lrc=$?
+ck "#70 session.json is archived where unpack reads it" "[ $lrc = 0 ] && grep -qx var/lib/bashtion/session.json /tmp/ro.list"
+ck "#70 the staging path does not leak into the archive" "[ $lrc = 0 ] && ! grep -q '^tmp/' /tmp/ro.list"
+
+echo "==> #70 ...and that archive restores, deletion list and all"
+printf 'baseline\n' > /etc/bashtion-70-gone
+rm -f /home/user/marker-70.txt
+rc=0; bashtion-unpack < /tmp/ro.tgz > /tmp/ro-unpack.err 2>&1 || rc=$?
+sed 's/^/     /' /tmp/ro-unpack.err
+ck "#70 unpack accepts it"                       "[ $rc = 0 ]"
+ck "#70 a home file saved read-only comes back"  "grep -qx canary-70 /home/user/marker-70.txt"
+ck "#70 its deletion list replays"               "! test -e /etc/bashtion-70-gone"
+ck "#70 unpack puts session.json back in place"  "grep -q bashtion-70-gone /var/lib/bashtion/session.json"
+
+echo "==> #70/#72 ...and it carries the format-2 marker, which a full root cannot stop"
+# The marker used to be packed from /, and put back first if it had gone. On
+# a full root that write failed, and the save went out without the marker -
+# an archive a pre-#72 unpacker applies blind. Staged in /tmp with
+# session.json, it is in every archive pack emits, and / is never written.
+rc=0; pack_in_ns 8m room nomarker > /tmp/nomark.tgz 2> /tmp/nomark.err 3> /tmp/nomark.left || rc=$?
+sed 's/^/     /' /tmp/nomark.err
+ck "#70/#72 test setup: a private read-only root (rc=$rc)" "[ $rc != 99 ]"
+ck "#70/#72 pack succeeds"                               "[ $rc = 0 ] && test -s /tmp/nomark.tgz"
+ck "#70/#72 ...leaves nothing behind, there or in /tmp"  "! test -s /tmp/nomark.left"
+ck "#70/#72 ...and the archive still names this build"   "[ \"\$(meta /tmp/nomark.tgz build)\" = \"\$(bid)\" ]"
+lrc=0; tar tzf /tmp/nomark.tgz > /tmp/nomark.list 2>/dev/null || lrc=$?
+ck "#70/#72 ...and still carries the marker"             "[ $lrc = 0 ] && grep -qx ${MARKER#/} /tmp/nomark.list"
+ck "#70/#72 ...which a format-1 unpacker refuses"        "! python3 /src/image/test/fixtures/state-format1.py unpack < /tmp/nomark.tgz"
+
+echo "==> #70 ...and when even /tmp is full, it fails in one clean line"
+rc=0; pack_in_ns 4k full > /tmp/nospace.tgz 2> /tmp/nospace.err 3> /tmp/nospace.left || rc=$?
+sed 's/^/     /' /tmp/nospace.err
+ck "#70 test setup: a private read-only root (rc=$rc)" "[ $rc != 99 ]"
+ck "#70 pack reports the failure"                "[ $rc != 0 ]"
+ck "#70 the reason is pack's own last line"      "tail -1 /tmp/nospace.err | grep -q '^bashtion-pack: .*No space left on device'"
+ck "#70 not a traceback"                         "! grep -q Traceback /tmp/nospace.err"
+ck "#70 no archive was emitted"                  "! test -s /tmp/nospace.tgz"
+ck "#70 nothing is left behind in /tmp"          "! test -s /tmp/nospace.left"
 
 exit $fail

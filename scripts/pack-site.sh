@@ -14,8 +14,10 @@
 #     --guest   the `snapshot-set` artifact: vmlinuz, rootfs-booted.ext4,
 #               vdb.qcow2 and vm.state
 #     --out     where to assemble (default out/site)
-#     --r2-tag  version suffix for the two R2 bundles, e.g. --r2-tag v2 gives
-#               load-rootfsB.v2.data. Required whenever their bytes change.
+#     --r2-tag  version suffix for the snapshot-set bundles - the two on R2 and
+#               the lab disk - e.g. --r2-tag v3 gives load-rootfsB.v3.data,
+#               load-state.v3.data and load-lab.v3.data. Must be the tag
+#               deploy/worker.js serves (see there for when to bump it).
 #
 # Files are located by NAME anywhere under the given directory, so it does not
 # matter how download-artifact happened to nest them.
@@ -133,6 +135,12 @@ mkdir -p "$STAGE/out"
 # tags name it and those should not churn. file_packager takes the two paths
 # separately, so they can differ; the loader records the data file's basename
 # as REMOTE_PACKAGE_BASE and fetches exactly that.
+#
+# The lab disk takes the tag too, although it is a static asset: it is part of
+# the same matched set (make-snapshot.sh captures against it), its bytes do
+# change - #70 grew it from 1 to 4 GiB - and it was once served as
+# `immutable, max-age=1y` under a fixed name, which no header change can
+# reach. Only a new name gets a returning browser off the old disk.
 SUF=""
 [ -n "$R2TAG" ] && SUF=".$R2TAG"
 # data file : loader js : source under in/ : guest path module.js expects
@@ -141,7 +149,7 @@ load-rom.data:load-rom.js:rom:/pack-rom
 load-kernel.data:load-kernel.js:vmlinuz:/pack-kernel/vmlinuz
 load-rootfsB${SUF}.data:load-rootfsB.js:rootfs.ext4:/pack-rootfs/rootfs.ext4
 load-state${SUF}.data:load-state.js:vm.state:/pack-state/vm.state
-load-lab.data:load-lab.js:vdb.qcow2:/pack-lab/vdb.qcow2
+load-lab${SUF}.data:load-lab.js:vdb.qcow2:/pack-lab/vdb.qcow2
 "
 
 echo "==> packaging (emsdk: $EMSDK_IMAGE)"

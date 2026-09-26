@@ -207,8 +207,28 @@ export class FakeGuest {
 
     // restore: apply
     if (line.includes('bashtion-unpack')) {
-      if (this.opts.unpackFails) this.write('\r\nBWR-FAIL ' + this.opts.unpackFails + '\r\n');
-      else { this.restored = this.tgz; this.write('\r\nBWR-OK\r\n'); }
+      if (this.opts.unpackFails) {
+        this.write('\r\nBWR-FAIL ' + this.opts.unpackFails + '\r\n');
+        return this.prompt();
+      }
+      this.restored = this.tgz;
+      // What bashtion-unpack printed last. The page only hears it if the
+      // success branch it typed forwards it, exactly as a shell would: a bare
+      // `printf 'BWR-OK'` says nothing about how much was restored.
+      const then = (line.match(/; then (.*?); else /) || [])[1] || '';
+      const says = /R-OK %s/.test(then) && /tail -1 \/tmp\/bw-load\.err/.test(then)
+        ? ' ' + (this.opts.unpackSays || 'bashtion-unpack: restored; 0 deletions applied')
+        : '';
+      const verdict = '\r\nBWR-OK' + says + '\r\n';
+      // A uart delivers a line in pieces; the page must not act on half of it.
+      if (this.opts.verdictInPieces) {
+        const cut = verdict.indexOf(' only') > 0 ? verdict.indexOf(' only') : verdict.length - 2;
+        this.write(verdict.slice(0, cut));
+        setTimeout(() => { this.write(verdict.slice(cut)); this.prompt(); },
+                   this.opts.verdictInPieces);
+        return;
+      }
+      this.write(verdict);
       return this.prompt();
     }
 

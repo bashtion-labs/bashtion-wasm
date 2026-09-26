@@ -4,10 +4,11 @@ supposed to be.
 
 Every check here exists because something shipped broken and nothing caught
 it: an empty offline apt index, no man pages, a root filesystem 95% full, a
-user outside adm, a half-configured network, a firewall that reported rules it
-had not loaded, and a clock running at 0.4x wall time. Build-time assertions
-cover the parts that are visible in the rootfs; these cover the parts that are
-only true once the kernel is running.
+failed fallocate that still filled it and a save that could not run once it
+had, a user outside adm, a half-configured network, a firewall that reported
+rules it had not loaded, and a clock running at 0.4x wall time. Build-time
+assertions cover the parts that are visible in the rootfs; these cover the
+parts that are only true once the kernel is running.
 
 The invocation mirrors snapshot/make-snapshot.sh, so this tests the machine
 that is actually shipped. Native TCG, not the wasm engine - it cannot prove
@@ -202,6 +203,57 @@ def run_checks(con):
     rc, out = capture(con, 'lsblk -dno NAME,SIZE /dev/vdb')
     check('#55 the spare disk /dev/vdb is present', rc == 0 and 'vdb' in out, out)
 
+    # ---- #70 a file-size cap that makes an oversized fallocate atomic -----
+    # ext4 keeps whatever fallocate managed to allocate before ENOSPC, so a
+    # `fallocate -l 10G` on / used to strand ~240 MB and leave the disk full.
+    # RLIMIT_FSIZE is checked before anything is allocated. The cap is the size
+    # of /dev/vdb, applied by pam_limits at the autologin - so it is also in
+    # every restored session - and root needs its own line: su resets the
+    # limit, and '*' never matches root.
+    rc, out = capture(con, 'lsblk -bdno SIZE /dev/vdb')
+    check('#70 /dev/vdb is 4 GiB', out.strip() == str(4 << 30), out)
+    rc, out = capture(con, 'echo "soft=$(ulimit -Sf) hard=$(ulimit -Hf)"')
+    check('#70 the shell has a soft 4 GiB file-size cap, hard unlimited',
+          'soft=4194304 hard=unlimited' in out, out)
+    rc, out = capture(con, "sudo bash -c 'ulimit -Sf'; sudo su -c 'ulimit -Sf'")
+    check('#70 root starts capped too, through sudo and through su',
+          out.split()[-2:] == ['4194304', '4194304'], out)
+    rc, out = capture(con, "(ulimit -f unlimited; ulimit -Sf); "
+                           "sudo bash -c 'ulimit -f unlimited; ulimit -Sf'")
+    check('#70 ulimit -f unlimited lifts it, on either side of sudo',
+          out.split()[-2:] == ['unlimited', 'unlimited'], out)
+    rc, out = capture(con, "grep -cF -e 'spare 4 GiB disk' -e 'may not exceed 4 GiB' "
+                           "-e 'ulimit -f unlimited' /etc/motd")
+    check('#70 the motd gives the disk size, the cap and how to lift it',
+          out.strip() == '3', out)
+    # 4 GiB is the disk's size, not what the tab can hold: what is written to
+    # it lives in the page's memory
+    rc, out = capture(con, "grep -c 'do not fill it' /etc/motd")
+    check('#70 the motd says not to fill /dev/vdb', out.strip() == '1', out)
+    for who, sudo, path in (('the user', '', '/var/tmp/bashtion-70.img'),
+                            ('root via sudo', 'sudo ', '/bashtion-70.img')):
+        # Measured and cleaned up in one command, so a failure strands nothing.
+        # The refusal arrives as SIGXFSZ, whose default action dumps core into
+        # the cwd - on / - unless the soft core limit is 0, as Ubuntu's systemd
+        # sets it. A core there would also land in the #50 clean-pack check.
+        rc, out = capture(con,
+                          'b=$(df --output=used -B1 / | tail -1); '
+                          '%sfallocate -l 10G %s; r=$?; '
+                          'a=$(df --output=used -B1 / | tail -1); '
+                          'echo "rc=$r delta=$((a - b)) '
+                          'file=$(stat -c %%s:%%b %s 2>/dev/null || echo absent) '
+                          'cores=$(ls -d core core.[0-9]* 2>/dev/null | wc -l)"; '
+                          '%srm -f %s core core.[0-9]*' % (sudo, path, path, sudo, path), 300)
+        m = re.search(r'rc=(\d+) delta=(-?\d+) file=(\S+) cores=(\d+)', out)
+        frc, delta, left, cores = ((int(m.group(1)), int(m.group(2)), m.group(3),
+                                    int(m.group(4))) if m else (0, 0, '?', -1))
+        check('#70 fallocate -l 10G on / is refused for %s (rc %d)' % (who, frc),
+              m is not None and frc != 0, out)
+        check('#70 ...and strands nothing: no blocks held, df unchanged (%s, %+d bytes)'
+              % (left, delta), m is not None and left in ('absent', '0:0')
+              and abs(delta) < (64 << 10), out)
+        check('#70 ...and dumps no core onto / (%d)' % cores, cores == 0, out)
+
     # ---- #57 coherently offline ------------------------------------------
     rc, out = capture(con, 'systemctl is-enabled systemd-resolved.service')
     check('#57 systemd-resolved is masked', 'masked' in out, out)
@@ -282,11 +334,33 @@ def run_checks(con):
     rc, err = capture(con, 'cat /tmp/probe.err')
     print('     pack said: %s' % err.replace('\n', ' | ')[:900], flush=True)
 
+    # ---- #72 an archive names the build it was saved on -------------------
+    # A restore applies the system half only to that same build, so the image
+    # has to carry an id - at the head of the baseline every save is a diff
+    # from - and pack has to record exactly it.
+    rc, out = capture(con, 'head -1 /usr/local/lib/bashtion/baseline.tsv')
+    m = re.fullmatch(r'#build\s+([0-9a-f]{64})', out.strip())
+    stamp = m.group(1) if m else ''
+    check('#72 the image carries a build id', m is not None, out)
+    rc, out = capture(con, "tar xzOf /tmp/probe.tgz var/lib/bashtion/session.json | python3 -c "
+                           "'import json,sys; m=json.load(sys.stdin); "
+                           "print(\"FORMAT=%s BUILD=%s\" % (m.get(\"format\"), m.get(\"build\")))'")
+    m = re.search(r'FORMAT=(\S+) BUILD=(\S+)', out)
+    check('#72 pack records the build id, in format 2',
+          m is not None and m.group(1) == '2' and len(stamp) == 64
+          and m.group(2) == stamp, out)
+    # ...and carries the member that makes a pre-#72 unpacker - an old tab,
+    # a rolled-back deploy - refuse it instead of applying it blind.
+    rc, out = capture(con, 'tar tzf /tmp/probe.tgz | grep -cx usr/lib/bashtion/archive-format-2')
+    check('#72 the archive carries the format-2 marker', out.strip() == '1', out)
+
     capture(con, 'rm -f ~/marker.txt ~/share/marker.txt; '
                  'sudo rm -rf /opt/example /etc/bashtion-probe; '
                  'sudo userdel -r exuser >/dev/null 2>&1; sudo groupdel exgroup', 300)
     rc, out = capture(con, 'sudo /usr/local/sbin/bashtion-unpack < /tmp/probe.tgz 2>&1', 600)
     check('#50 bashtion-unpack applies it', rc == 0, out)
+    check('#72 an archive from this same build restores in full',
+          'bashtion-unpack: restored; ' in out and 'home only' not in out, out)
 
     rc, out = capture(con, 'cat ~/marker.txt')
     check('#50 a home file comes back', 'canary-home' in out, out)
@@ -303,10 +377,75 @@ def run_checks(con):
                  'rm -f ~/marker.txt ~/share/marker.txt; '
                  'sudo userdel -r exuser >/dev/null 2>&1; sudo groupdel exgroup', 300)
 
+    # ...and one from any other build brings back home, and nothing else.
+    other = '0' * 64
+    capture(con, 'rm -rf /tmp/x72 && mkdir -p /tmp/x72/home/user /tmp/x72/etc '
+                 '/tmp/x72/var/lib/bashtion && '
+                 'echo from-elsewhere > /tmp/x72/home/user/x72.txt && '
+                 'echo from-elsewhere > /tmp/x72/etc/bashtion-x72 && '
+                 "echo '{\"format\": 2, \"build\": \"%s\"}' "
+                 '> /tmp/x72/var/lib/bashtion/session.json && '
+                 'tar czf /tmp/x72.tgz -C /tmp/x72 home/user/x72.txt etc/bashtion-x72 '
+                 'var/lib/bashtion/session.json' % other)
+    rc, out = capture(con, 'sudo /usr/local/sbin/bashtion-unpack < /tmp/x72.tgz 2>&1', 600)
+    check('#72 an archive from another build restores home only',
+          rc == 0 and 'bashtion-unpack: restored home only; ' in out, out)
+    check('#72 ...and the warning names both builds',
+          other in out and len(stamp) == 64 and stamp in out, out)
+    rc, out = capture(con, 'cat ~/x72.txt; '
+                           'test -e /etc/bashtion-x72 && echo SYSTEM-APPLIED || echo SYSTEM-SKIPPED')
+    check('#72 its home file comes back', 'from-elsewhere' in out, out)
+    check('#72 its system file does not', 'SYSTEM-SKIPPED' in out, out)
+    capture(con, 'sudo rm -rf /tmp/x72 /tmp/x72.tgz /etc/bashtion-x72; rm -f ~/x72.txt', 120)
+
     # ---- #60 the guest can be told the terminal's shape -------------------
     rc, out = capture(con, 'stty rows 43 cols 160; stty size')
     check('#60 the console accepts a window size', out.strip().endswith('43 160'), out)
     capture(con, 'stty rows 24 cols 80')
+
+    # ---- #70 a save works when / is 100% full -----------------------------
+    # LAST on purpose: this fills the root filesystem, and anything that ran
+    # after a failed cleanup would be measuring a full disk. pack used to write
+    # session.json to /var/lib/bashtion first, so on a full disk the save died
+    # with a traceback - survivable only when an earlier copy's block could be
+    # reused, which is why any such copy is removed first. The fill is the very
+    # partial fallocate the cap exists to stop, run with the cap lifted on the
+    # root side so the root reserve goes too. /tmp, where pack now stages its
+    # metadata and the page writes the archive, is a tmpfs and unaffected.
+    rc, out = capture(con, 'findmnt -no FSTYPE /tmp')
+    check('#70 /tmp is a tmpfs, so it has room when / has none',
+          out.strip() == 'tmpfs', out)
+    capture(con, 'sudo rm -f /var/lib/bashtion/session.json')
+    rc, out = capture(con, "echo \"was=$(df --output=avail -m / | tail -1 | tr -d ' ')\"; "
+                           "sudo bash -c 'ulimit -f unlimited; "
+                           "fallocate -l 10G /var/tmp/bashtion-70-fill' 2>&1; "
+                           "echo \"avail=$(df --output=avail -B1 / | tail -1 | tr -d ' ')\"", 600)
+    m = re.search(r'was=(\d+)', out)
+    was = int(m.group(1)) if m else -1
+    check('#70 / is full for the test (%d MiB were free)' % was, 'avail=0' in out.split(), out)
+    rc, out = capture(con, 'sudo /usr/local/sbin/bashtion-pack > /tmp/full.tgz 2>/tmp/full.err; '
+                           'echo "pack=$?"; tail -1 /tmp/full.err; '
+                           'echo "meta=$(tar tzf /tmp/full.tgz | grep -cx var/lib/bashtion/session.json)"; '
+                           'echo "marker=$(tar tzf /tmp/full.tgz | grep -cx usr/lib/bashtion/archive-format-2)"; '
+                           'test -e /var/lib/bashtion/session.json && echo WROTE-IN-PLACE; '
+                           'test -e /usr/lib/bashtion/archive-format-2 && echo WROTE-IN-PLACE', 900)
+    check('#70 bashtion-pack succeeds with / at 100%', 'pack=0' in out.split(), out)
+    check('#70 ...its archive carries the session metadata', 'meta=1' in out.split(), out)
+    # staged with the metadata, so a full / cannot keep it out (#72)
+    check('#70 ...and the format-2 marker', 'marker=1' in out.split(), out)
+    check('#70 ...and it wrote nothing to /', 'WROTE-IN-PLACE' not in out, out)
+    rc, out = capture(con, 'sudo rm -f /var/tmp/bashtion-70-fill; '
+                           'echo "avail=$(df --output=avail -m / | tail -1 | tr -d \' \')"', 300)
+    m = re.search(r'avail=(\d+)', out)
+    avail = int(m.group(1)) if m else -1
+    check('#70 the fill is cleaned up (%d MiB free again, %d before)' % (avail, was),
+          was > 0 and avail >= was - 1, out)
+    rc, out = capture(con, 'sudo /usr/local/sbin/bashtion-unpack < /tmp/full.tgz 2>&1; '
+                           'echo "unpack=$?"; rm -f /tmp/full.tgz /tmp/full.err', 600)
+    # Exit 0 alone no longer says it: a restore of home only exits 0 too (#72).
+    # Saved on this very build, with its id staged in /tmp, it comes back whole.
+    check('#70 the archive saved on a full disk restores, in full',
+          'unpack=0' in out.split() and 'bashtion-unpack: restored; ' in out, out)
 
 
 if __name__ == '__main__':

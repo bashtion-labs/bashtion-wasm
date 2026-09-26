@@ -408,10 +408,70 @@ RUN set -e; \
       > /rootfs/etc/netplan/README-no-network; \
     chmod 644 /rootfs/etc/netplan/README-no-network
 
+# ------------------------------------------------------ one file, one limit
+# The size of /dev/vdb in GiB. It is also the file-size limit below and what
+# the motd tells people, so the three cannot drift apart.
+ARG VDB_GIB=4
+# A SOFT RLIMIT_FSIZE at the size of /dev/vdb (#70).
+#
+# When ext4 runs out of space part-way through fallocate it keeps the blocks
+# it did get - deliberately, mirroring write(2) - and fallocate(1) does no
+# cleanup, so `fallocate -l 10G` on / stranded a ~240 MB stub and left the disk
+# at 100%. But ext4 checks RLIMIT_FSIZE (inode_newsize_ok) BEFORE it allocates
+# anything, so a request over the limit fails whole - EFBIG, "File size limit
+# exceeded" - without allocating a single block; at most an empty file is left
+# behind. (SIGXFSZ's default action dumps core into the cwd, but Ubuntu's
+# systemd already holds the soft core limit at 0.) At the spare disk's size, no
+# file that could fit anywhere on this machine is refused; the one casualty is
+# a sparse file bigger than that. It is soft, the hard limit stays unlimited,
+# `ulimit -a` shows it and `ulimit -f unlimited` lifts it.
+#
+# pam_limits applies it from /etc/pam.d/login, at the autologin that runs when
+# the snapshot is captured, so every process in a restored session inherits
+# it. The root line is not optional. '*' never matches root, and util-linux su
+# (and runuser) raise RLIMIT_FSIZE to unlimited for themselves and never hand
+# the caller's value back, so without it `sudo su -` is an uncapped root shell
+# (measured on 26.04). With it, sudo, sudo -i and su all start capped. The
+# price: each of those is a fresh PAM session, so lifting the cap in the
+# user's shell does not carry across sudo - the file says where to lift it.
+RUN set -e; \
+    grep -qE '^session[[:space:]]+required[[:space:]]+pam_limits\.so' /rootfs/etc/pam.d/login || \
+      { echo "FATAL: /etc/pam.d/login does not apply pam_limits"; exit 1; }; \
+    kib=$((VDB_GIB * 1048576)); \
+    mkdir -p /rootfs/etc/security/limits.d; \
+    printf '%s\n' \
+      '# bashtion: a soft limit on how large any one file may grow.' \
+      '#' \
+      '# When ext4 runs out of room part-way through fallocate(1), it keeps the' \
+      '# blocks it did get, so `fallocate -l 10G /big.img` on a small / leaves a' \
+      '# partial file behind and the disk 100% full. A file-size limit is checked' \
+      '# before anything is allocated: a request over it fails at once, with' \
+      '# "File size limit exceeded", using no space - at most an empty file is' \
+      '# left behind.' \
+      '#' \
+      "# The limit is ${VDB_GIB} GiB, the size of the spare disk /dev/vdb, so nothing" \
+      '# that could fit anywhere on this machine is refused - except a sparse' \
+      '# file bigger than that. Only the soft limit is set; the hard limit stays' \
+      '# unlimited. `ulimit -a` shows it, and `ulimit -f unlimited` lifts it for' \
+      '# the shell you run it in and everything started from there.' \
+      '#' \
+      '# pam_limits applies this afresh to every session it opens - and sudo and' \
+      '# su each open one - so root has its own line (* never matches root).' \
+      '# Lifting the limit in your own shell therefore does not carry across' \
+      '# sudo. Lift it on the root side instead: `sudo -i`, then' \
+      '# `ulimit -f unlimited`; or sudo sh -c "ulimit -f unlimited; <command>".' \
+      "*               soft    fsize           ${kib}" \
+      "root            soft    fsize           ${kib}" \
+      > /rootfs/etc/security/limits.d/90-bashtion-fsize.conf; \
+    chmod 644 /rootfs/etc/security/limits.d/90-bashtion-fsize.conf; \
+    cat /rootfs/etc/security/limits.d/90-bashtion-fsize.conf
+
 # The one screen everyone sees. The boot screen clears the console and prints
 # this before handing over, so the things that are otherwise undiscoverable -
-# no network by design, a spare disk nobody mentions, work that is not saved
-# unless you save it - are stated once, up front.
+# no network by design, a spare disk nobody mentions, a file-size cap nobody
+# would guess at, work that is not saved unless you save it - are stated
+# once, up front. (Lines carrying the size are double-quoted, and so must not
+# contain backticks.)
 RUN set -e; rm -f /rootfs/etc/motd; printf '%s\n' \
       '' \
       '  bashtion - a real Linux system, running in your browser tab.' \
@@ -419,10 +479,15 @@ RUN set -e; rm -f /rootfs/etc/motd; printf '%s\n' \
       '  Network   None, by design. Loopback works (ping 127.0.0.1); nothing' \
       '            outside this VM is reachable. `apt install` is served from' \
       '            the offline repository in /srv/apt.' \
-      '  Storage   / has limited room. /dev/vdb is a spare 1 GB disk, empty and' \
-      '            unpartitioned - use it for partitioning, LVM and quota work.' \
+      '  Storage   / has limited room: `df -h /` shows what is left. /dev/vdb' \
+      "            is a spare ${VDB_GIB} GiB disk, empty and unpartitioned: practise" \
+      '            partitioning, LVM and quotas on it, but do not fill it - what' \
+      '            you write to it is held in the memory of this browser tab.' \
+      "            A file may not exceed ${VDB_GIB} GiB, so an oversized fallocate fails" \
+      '            at once and uses no space. `ulimit -f unlimited` lifts that' \
+      '            for one shell (sudo starts a new one: lift it in `sudo -i`).' \
       '  Saving    Nothing is saved automatically. Use "Download my work"' \
-      '            before you close the tab.' \
+      '            before you close the tab. /dev/vdb is never saved.' \
       '  Docs      Manual pages are installed: try `man man` or `man -k disk`.' \
       '' \
       > /rootfs/etc/motd; \
@@ -450,7 +515,9 @@ RUN du -x --max-depth=2 --block-size=1M /rootfs 2>/dev/null | sort -rn | head -2
 # actually changed. Without it every save would have to carry all of /etc
 # across a serial console at a few hundred bytes a second. This must be the
 # LAST thing that touches the rootfs, or whatever came after would look
-# "changed" in every session.
+# "changed" in every session. Its first line is the build id every save
+# records and every restore compares (#72): a digest of every path the
+# baseline covers, contents included.
 RUN set -e; chroot /rootfs /usr/local/sbin/bashtion-baseline; \
     lines=$(wc -l < /rootfs/usr/local/lib/bashtion/baseline.tsv); \
     echo "baseline: ${lines} paths"; \
@@ -466,8 +533,28 @@ RUN set -e; \
       { echo "FATAL: pack did not include a home file"; exit 1; }; \
     tar tzf /rootfs/tmp/probe.tgz | grep -q '^home/user/share/' || \
       { echo "FATAL: pack excluded the share directory"; exit 1; }; \
+    tar tzf /rootfs/tmp/probe.tgz | grep -qx 'var/lib/bashtion/session.json' || \
+      { echo "FATAL: pack did not archive its session metadata"; exit 1; }; \
+    tar tzf /rootfs/tmp/probe.tgz | grep -qx 'usr/lib/bashtion/archive-format-2' || \
+      { echo "FATAL: no format-2 marker: pre-#72 unpackers would accept this image's archives"; exit 1; }; \
+    ! tar tzf /rootfs/tmp/probe.tgz | grep -q '^tmp/' || \
+      { echo "FATAL: pack archived its staging path"; exit 1; }; \
+    [ ! -e /rootfs/var/lib/bashtion/session.json ] || \
+      { echo "FATAL: pack wrote session.json to the root filesystem (#70)"; exit 1; }; \
+    [ ! -e /rootfs/usr/lib/bashtion/archive-format-2 ] || \
+      { echo "FATAL: pack wrote the format-2 marker to the root filesystem"; exit 1; }; \
+    ! ls -d /rootfs/tmp/bashtion-pack-* 2>/dev/null || \
+      { echo "FATAL: pack left its staging directory behind"; exit 1; }; \
     rm -f /rootfs/tmp/probe.tgz /rootfs/tmp/probe.err /rootfs/home/user/.bashtion-canary; \
     chroot /rootfs /usr/local/sbin/bashtion-baseline
+# Without a build id every archive this image saves restores home-only, even
+# onto this very image; without the format-2 marker (which the probe above
+# requires of every archive), an unpacker from before #72 would apply them
+# blind. Either fails the build, not the user.
+RUN set -e; head=$(head -1 /rootfs/usr/local/lib/bashtion/baseline.tsv); \
+    printf '%s\n' "$head" | grep -Eq '^#build[[:space:]][0-9a-f]{64}$' || \
+      { echo "FATAL: baseline.tsv carries no build id (first line: $head)"; exit 1; }; \
+    echo "build id: $(printf '%s\n' "$head" | cut -f2)"
 
 # ------------------------------------------------------------- disk images
 # root: measured content + a real free-space TARGET.
@@ -476,14 +563,18 @@ RUN set -e; \
 # journal, group descriptors) and the default 5% root reserve then ate most of
 # that, and the image shipped 95% full with ~46 MB free - not enough for
 # ordinary work, and the reason `fallocate -l 10G` gets far enough to leave an
-# 85 MB stub before failing and takes the disk to 100%.
+# 85 MB stub before failing and takes the disk to 100%. (More room only moved
+# that threshold; the file-size limit above is what makes it fail whole.)
 #
 # Size for content PLUS a stated free-space target, and drop the root reserve
 # to 1%: this is a single-user disposable VM, and 5% held back ~40 MB for a
 # fsck that has nowhere to run. The ceiling is real - the whole rootfs image is
-# resident in the wasm heap (-sTOTAL_MEMORY=2300MB, shared with 512 MB of guest
-# RAM and the 128 MB TB cache) - so FREE_MB is a deliberate balance and
-# /dev/vdb (1 GB, qcow2, grows on write) is the place for anything large.
+# resident in the tab's memory: emscripten's in-memory filesystem keeps each
+# disk image as a JS array beside the fixed wasm heap (-sTOTAL_MEMORY=2300MB,
+# which holds the 512 MB of guest RAM, the 128 MB TB cache and QEMU) - so
+# FREE_MB is a deliberate balance. /dev/vdb (VDB_GIB, qcow2, grows on write)
+# is no way round that ceiling: what the guest writes there grows its array in
+# the same tab (see the practice disk below).
 ARG FREE_MB=192
 RUN set -e; content_mb=$(( $(du -s --block-size=1024 /rootfs | cut -f1) / 1024 )); \
     size_mb=$(( (content_mb + ${FREE_MB}) * 108 / 100 )); \
@@ -513,9 +604,22 @@ RUN debugfs -R 'ea_list /usr/bin/ping' /out/rootfs.ext4 2>/dev/null | \
       grep -q security.capability || { echo "FATAL: cap xattr lost in ext4"; exit 1; }
 # practice disk: qcow2, empty, unpartitioned - partitioning it is the
 # exercise. qcow2 so the browser holds ~200 KB, growing only as written,
-# instead of 256 MB of raw zeros resident in the wasm heap.
-RUN apt-get install -y --no-install-recommends qemu-utils >/dev/null && \
-    qemu-img create -f qcow2 /out/vdb.qcow2 1G && ls -la /out/vdb.qcow2
+# instead of all VDB_GIB of it as raw zeros in the tab's memory. Empty,
+# it costs the same at 4 GiB as it did at 1 GiB (the L1 table grows by 48
+# bytes), and 4 GiB holds the handful of 1 GiB loop files and volume groups
+# that LVM tutorials build. The nominal size is not the whole story in a
+# browser: whatever the guest actually WRITES to the disk grows its in-memory
+# array (MEMFS regrows a file 12.5% at a time, copying it whole), so the tab's
+# free memory, not this number, bounds how much can be filled. Raising
+# -sTOTAL_MEMORY would not help: that is the wasm heap, not where files live.
+RUN set -e; apt-get install -y --no-install-recommends qemu-utils >/dev/null; \
+    qemu-img create -f qcow2 /out/vdb.qcow2 ${VDB_GIB}G; ls -la /out/vdb.qcow2; \
+    vsize=$(qemu-img info --output=json /out/vdb.qcow2 | \
+            python3 -c 'import json, sys; print(json.load(sys.stdin)["virtual-size"])'); \
+    [ "$vsize" = $((VDB_GIB * 1073741824)) ] || \
+      { echo "FATAL: vdb.qcow2 is ${vsize} bytes, not ${VDB_GIB} GiB"; exit 1; }; \
+    sz=$(stat -c %s /out/vdb.qcow2); \
+    [ "$sz" -lt 1048576 ] || { echo "FATAL: the empty vdb.qcow2 is ${sz} bytes"; exit 1; }
 # manifest
 ARG SNAPSHOT
 RUN python3 - <<PYEOF
@@ -528,6 +632,7 @@ def sha(p):
 json.dump({
     'suite': '${SUITE}', 'snapshot': '${SNAPSHOT}',
     'kernel': open('/kver').read().strip(),
+    'build_id': open('/rootfs/usr/local/lib/bashtion/baseline.tsv').readline().split()[1],
     'artifacts': {p: {'bytes': os.path.getsize('/out/' + p), 'sha256': sha('/out/' + p)}
                   for p in os.listdir('/out')},
 }, open('/out/manifest.json', 'w'), indent=1)

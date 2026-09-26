@@ -15,9 +15,10 @@
 // both environments, so it needs no calibration and cannot inherit one.
 //
 // Memory arithmetic (the wasm heap is fixed at link time, -sTOTAL_MEMORY=2GB):
-// guest RAM (-m) + TCI tb cache (tb-size) + MEMFS-preloaded assets + QEMU
-// itself must all fit inside it. Keep -m plus tb-size comfortably under
-// ~1.4 GB until measured.
+// guest RAM (-m) + TCI tb cache (tb-size) + QEMU itself must all fit inside
+// it. Keep -m plus tb-size comfortably under ~1.4 GB until measured. The disk
+// images are not in it: MEMFS keeps each file as its own JS array beside the
+// heap, so they count against the tab's memory, not TOTAL_MEMORY.
 globalThis.Module = {
     arguments: [
         '-nographic', '-M', 'pc-i440fx-8.2', '-cpu', 'qemu64,+rdrand', '-smp', '1',

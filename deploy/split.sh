@@ -41,7 +41,7 @@ DROP=("${BIG[@]}" out.wasm "${PAGE[@]}")
 
 die() { echo "split.sh: $*" >&2; exit 1; }
 
-[ -d "$SRC" ] || die "built htdocs not found: $SRC (run: make site ENGINE=... GUEST=...)"
+[ -d "$SRC" ] || die "built htdocs not found: $SRC (run: make site ENGINE=... GUEST=... R2TAG=...)"
 [ ${#BIG[@]} -gt 0 ] || die "no file in $SRC is over the 25 MiB cap — is this a real build?"
 [ -f "$SRC/out.js" ] || die "$SRC has no out.js — is this a fork-engine build?"
 for f in web/fork/index.html web/fork/boot.js web/serialfs.js web/serialtap.js \
@@ -75,9 +75,13 @@ cp "$HERE/_headers"             "$PUB/_headers"
 for f in index.html boot.js serialfs.js serialtap.js termfit.js bootscreen.js module.js \
          out.js qemu-system-x86_64.worker.js \
          load-rom.js load-kernel.js load-rootfsB.js load-state.js load-lab.js \
-         load-kernel.data load-rom.data load-lab.data _headers; do
+         load-kernel.data load-rom.data _headers; do
   [ -e "$PUB/$f" ] || die "assembled public/ is missing $f"
 done
+# The lab disk is versioned with the snapshot set (load-lab.v3.data), so ask its
+# loader which name it fetches rather than assuming one.
+lab=$(sed -n "s/.*REMOTE_PACKAGE_BASE = '\([^']*\)'.*/\1/p" "$PUB/load-lab.js")
+[ -n "$lab" ] && [ -e "$PUB/$lab" ] || die "assembled public/ is missing the lab disk (${lab:-?})"
 # Every <script src> the page names must exist, or the deploy 404s at boot.
 while IFS= read -r ref; do
   [ -e "$PUB/$ref" ] || die "index.html references missing file: $ref"

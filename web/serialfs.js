@@ -71,7 +71,17 @@ const SERIALFS = (() => {
   let busy = false;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  // strip OSC (incl. 26.04 shell-integration OSC 3008) + CSI before matching
+  // strip OSC (incl. 26.04 shell-integration OSC 3008) + CSI before matching.
+  //
+  // This reads the RAW mirror, not SERIALTAP's screen, on purpose (#69). Every
+  // question here is "has the guest printed X since offset N" - a marker, the
+  // payload, a fresh prompt after a command this code sent - and the raw
+  // record only ever grows, so an answer cannot be taken back. On a screen, a
+  // `clear` (tidy() sends one) could erase a match before it was seen, and the
+  // payload is far longer than any scrollback. The line editors' redraws that
+  // make the raw record misleading as text only ever touch the echo of typed
+  // input, and nothing here matches an echo: that is what splitting every
+  // marker across quotes is for (see the header).
   const clean = (x) => x
     .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '')
     .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
@@ -133,6 +143,7 @@ const SERIALFS = (() => {
     }
     return {
       show(t) { if (!el) build(); clearTimeout(timer); title.textContent = t; sub.textContent = '';
+                bar.style.background = '#4a9eff';
                 bar.classList.add('bwIndet'); bar.style.width = '30%'; el.style.display = 'flex'; },
       title(t) { if (title) title.textContent = t; },
       sub(t) { if (sub) sub.textContent = t; },
@@ -147,6 +158,12 @@ const SERIALFS = (() => {
                 el.style.display = 'flex'; title.textContent = t;
                 sub.textContent = why || 'You can keep working; nothing was changed.';
                 timer = setTimeout(() => { el.style.display = 'none'; bar.style.background = '#4a9eff'; }, 6000); },
+      // Finished, but not with everything that was asked for. Held longer than
+      // either of the others: it is the one that needs reading.
+      warn(t, why) { if (!el) build(); clearTimeout(timer); bar.classList.remove('bwIndet');
+                bar.style.background = '#e0a93c'; bar.style.marginLeft = '0'; bar.style.width = '100%';
+                el.style.display = 'flex'; title.textContent = t; sub.textContent = why;
+                timer = setTimeout(() => { el.style.display = 'none'; bar.style.background = '#4a9eff'; }, 12000); },
     };
   })();
 
@@ -356,17 +373,25 @@ const SERIALFS = (() => {
 
       ov.title('Putting your work back…');
       t0 = serialLen();
+      // The last line bashtion-unpack prints travels back either way: on
+      // failure it is the reason, and on success it says HOW MUCH came back.
+      // An archive saved on a different build of the image restores the home
+      // directory only (#72), and that must not be reported as if it were
+      // the whole session.
+      const said = '"$(tail -1 /tmp/bw-load.err | tr -c "[:print:]" " ")"';
       paste('if ' + UNPACK + ' < /tmp/bw-load.tgz >/tmp/bw-load.err 2>&1; then ' +
-              emit('R-OK') + '; else ' +
-              emit('R-FAIL', '%s', '"$(tail -1 /tmp/bw-load.err | tr -c "[:print:]" " ")"') + '; fi; ' +
+              emit('R-OK', '%s', said) + '; else ' + emit('R-FAIL', '%s', said) + '; fi; ' +
             'rm -f /tmp/bw-load.b64 /tmp/bw-load.tgz /tmp/bw-load.err; stty echo\n');
-      const done = await waitFor(/BWR-OK|BWR-FAIL([^\n]*)/, t0, ms('work', WORK_MS));
+      // Up to the END of the line: matched on the marker alone, a verdict
+      // still arriving ("restored ho") would be read as a full restore.
+      const done = await waitFor(/BWR-(OK|FAIL)([^\r\n]*)[\r\n]/, t0, ms('work', WORK_MS));
       if (!done) return { ok: false, why: 'Unpacking never finished.' };
-      if (done[0].startsWith('BWR-FAIL')) {
-        return { ok: false, why: (done[1] || '').trim() || 'The guest could not unpack the archive.' };
+      const verdict = done[2].trim();
+      if (done[1] === 'FAIL') {
+        return { ok: false, why: verdict || 'The guest could not unpack the archive.' };
       }
       clean = true;
-      return { ok: true };
+      return { ok: true, homeOnly: /\brestored home only\b/.test(verdict) };
     } finally {
       try {
         if (engaged) {
@@ -406,6 +431,9 @@ const SERIALFS = (() => {
     // that instead. Both paths are reachable from the page - the browser copy
     // used to be advertised in the status line with no control that could
     // reach it.
+    //
+    // Resolves true for a full restore, 'home-only' when the guest restored
+    // the home directory alone (#72), false when nothing was restored.
     async load(file) {
       const bin = file ? new Uint8Array(await file.arrayBuffer()) : await opfsRead();
       if (!bin || !bin.length) {
@@ -413,7 +441,18 @@ const SERIALFS = (() => {
         return false;
       }
       const r = await importWork(bin);
-      if (r.ok) { ov.done('✓ Your work was restored'); return true; }
+      // The overlay goes away; the status line stays until the next save, so
+      // a partial restore is still on screen after the user looks back.
+      const status = (m) => { if (typeof window.__sfsStatus === 'function') window.__sfsStatus(m); };
+      if (r.ok && r.homeOnly) {
+        ov.warn('Only your home folder was restored',
+                'This work was saved on a different version of bashtion. Your files are ' +
+                'back; your changes to system settings (/etc, users and groups, cron ' +
+                'jobs, /opt) were left out, because they could undo fixes in this version.');
+        status('restored your home folder only — system changes were left out');
+        return 'home-only';
+      }
+      if (r.ok) { ov.done('✓ Your work was restored'); status('your work was restored'); return true; }
       if (!r.busy) ov.fail(r.title || 'Could not restore your work', r.why);
       return false;
     },

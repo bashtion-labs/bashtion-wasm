@@ -90,10 +90,11 @@ pack:
 ## "Getting the files", has the commands); a bare `gh run download -n` takes
 ## the newest artifact of that name from any run, pull requests included.
 ## Then: make site ENGINE=/tmp/engine GUEST=/tmp/guest R2TAG=v3
-## R2TAG versions the snapshot-set bundles (the two on R2, the lab disk and the
-## ROMs); bump it whenever their bytes change, or caches will keep serving the
-## old ones (see deploy/README.md). It must be the tag deploy/worker.js serves, and
-## that is bumped with the change itself - never re-upload under a live tag.
+## R2TAG versions the snapshot-set bundles (the two on R2, and the kernel, lab
+## disk and ROMs); bump it whenever their bytes change, or caches will keep
+## serving the old ones (see deploy/README.md). It must be the tag
+## deploy/worker.js serves, and that is bumped with the change itself - never
+## re-upload under a live tag.
 ## R2TAG is required: worker.js serves only versioned keys, so an untagged build
 ## can never be deployed, and pack-site.sh would only say so after packaging.
 SITE_USAGE := usage: make site ENGINE=<qemu-engine dir> GUEST=<snapshot-set dir> R2TAG=<the tag deploy/worker.js serves>

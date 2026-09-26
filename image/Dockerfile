@@ -534,24 +534,26 @@ RUN set -e; \
       { echo "FATAL: pack excluded the share directory"; exit 1; }; \
     tar tzf /rootfs/tmp/probe.tgz | grep -qx 'var/lib/bashtion/session.json' || \
       { echo "FATAL: pack did not archive its session metadata"; exit 1; }; \
+    tar tzf /rootfs/tmp/probe.tgz | grep -qx 'usr/lib/bashtion/archive-format-2' || \
+      { echo "FATAL: no format-2 marker: pre-#72 unpackers would accept this image's archives"; exit 1; }; \
     ! tar tzf /rootfs/tmp/probe.tgz | grep -q '^tmp/' || \
       { echo "FATAL: pack archived its staging path"; exit 1; }; \
     [ ! -e /rootfs/var/lib/bashtion/session.json ] || \
       { echo "FATAL: pack wrote session.json to the root filesystem (#70)"; exit 1; }; \
+    [ ! -e /rootfs/usr/lib/bashtion/archive-format-2 ] || \
+      { echo "FATAL: pack wrote the format-2 marker to the root filesystem"; exit 1; }; \
     ! ls -d /rootfs/tmp/bashtion-pack-* 2>/dev/null || \
       { echo "FATAL: pack left its staging directory behind"; exit 1; }; \
     rm -f /rootfs/tmp/probe.tgz /rootfs/tmp/probe.err /rootfs/home/user/.bashtion-canary; \
     chroot /rootfs /usr/local/sbin/bashtion-baseline
 # Without a build id every archive this image saves restores home-only, even
-# onto this very image; without the format-2 marker (which pack writes when it
-# is missing, so the probe above left it), an unpacker from before #72 would
-# apply them blind. Either fails the build, not the user.
+# onto this very image; without the format-2 marker (which the probe above
+# requires of every archive), an unpacker from before #72 would apply them
+# blind. Either fails the build, not the user.
 RUN set -e; head=$(head -1 /rootfs/usr/local/lib/bashtion/baseline.tsv); \
     printf '%s\n' "$head" | grep -Eq '^#build[[:space:]][0-9a-f]{64}$' || \
       { echo "FATAL: baseline.tsv carries no build id (first line: $head)"; exit 1; }; \
-    echo "build id: $(printf '%s\n' "$head" | cut -f2)"; \
-    [ -s /rootfs/usr/lib/bashtion/archive-format-2 ] || \
-      { echo "FATAL: no format-2 marker: pre-#72 unpackers would accept this image's archives"; exit 1; }
+    echo "build id: $(printf '%s\n' "$head" | cut -f2)"
 
 # ------------------------------------------------------------- disk images
 # root: measured content + a real free-space TARGET.

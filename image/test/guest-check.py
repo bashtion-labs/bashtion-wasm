@@ -422,9 +422,13 @@ def run_checks(con):
     rc, out = capture(con, 'sudo /usr/local/sbin/bashtion-pack > /tmp/full.tgz 2>/tmp/full.err; '
                            'echo "pack=$?"; tail -1 /tmp/full.err; '
                            'echo "meta=$(tar tzf /tmp/full.tgz | grep -cx var/lib/bashtion/session.json)"; '
-                           'test -e /var/lib/bashtion/session.json && echo WROTE-IN-PLACE', 900)
+                           'echo "marker=$(tar tzf /tmp/full.tgz | grep -cx usr/lib/bashtion/archive-format-2)"; '
+                           'test -e /var/lib/bashtion/session.json && echo WROTE-IN-PLACE; '
+                           'test -e /usr/lib/bashtion/archive-format-2 && echo WROTE-IN-PLACE', 900)
     check('#70 bashtion-pack succeeds with / at 100%', 'pack=0' in out.split(), out)
     check('#70 ...its archive carries the session metadata', 'meta=1' in out.split(), out)
+    # staged with the metadata, so a full / cannot keep it out (#72)
+    check('#70 ...and the format-2 marker', 'marker=1' in out.split(), out)
     check('#70 ...and it wrote nothing to /', 'WROTE-IN-PLACE' not in out, out)
     rc, out = capture(con, 'sudo rm -f /var/tmp/bashtion-70-fill; '
                            'echo "avail=$(df --output=avail -m / | tail -1 | tr -d \' \')"', 300)

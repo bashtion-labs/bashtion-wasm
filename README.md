@@ -138,9 +138,9 @@ never reads `format` or `build`. Every format-2 archive also carries
 `usr/lib/bashtion/archive-format-2`, a member outside every tree any `bashtion-unpack` has
 been allowed to write, so an older build - a tab left open across a deploy, or a rollback -
 refuses the whole archive before extracting anything, rather than applying a newer build's
-system files. `bashtion-pack` writes it back if it has been deleted or replaced by something
-tar would not pack (a socket); where it cannot - a full root filesystem - it says so and saves
-without it, since losing the work would be worse. `bashtion-unpack` skips that member and never
+system files. `bashtion-pack` stages it in `/tmp` with `session.json` and renames both into
+place inside the archive, so nothing on the root filesystem - a deleted file, a full disk - can
+leave it out, and a save writes nothing to `/`. `bashtion-unpack` skips that member and never
 extracts it.
 
 **How it travels.** The payload is fed to a command reading the tty directly (`head -c N`),

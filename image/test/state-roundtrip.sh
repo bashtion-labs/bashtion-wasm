@@ -28,7 +28,7 @@ install -D -m755 "$SEED/usr/local/lib/bashtion/state.py" /usr/local/lib/bashtion
 for f in pack unpack baseline; do
   install -D -m755 "$SEED/usr/local/sbin/bashtion-$f" "/usr/local/sbin/bashtion-$f"
 done
-MARKER=/usr/lib/bashtion/archive-format-2    # pack writes it when missing
+MARKER=/usr/lib/bashtion/archive-format-2    # in every archive, never on /
 
 fail=0
 ck() { if eval "$2" >/dev/null 2>&1; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
@@ -108,21 +108,25 @@ ck "#72 a same-build archive restores in full" \
 ck "#72 pack adds the marker a format-1 unpacker refuses" \
    "tar tzf /tmp/session.tgz | grep -x ${MARKER#/}"
 ck "#72 ...and unpack never writes it"   "! test -e $MARKER"
-# ...and a deleted marker does not quietly drop out of the next archive: tar
-# skips what it cannot read, so pack has to put it back.
+# ...nor does pack: the marker is staged in /tmp with session.json, so nothing
+# on / can keep it out of an archive. Packed from /, one that had been deleted
+# dropped out silently - tar skips what it cannot read - and a full root would
+# not let it be put back.
 bashtion-pack > /tmp/remarked.tgz 2>/dev/null
-ck "#72 pack puts a deleted marker back"  "test -s $MARKER"
-ck "#72 ...and it is in the archive"      "tar tzf /tmp/remarked.tgz | grep -x ${MARKER#/}"
-# Nor one that has become a socket: the path exists, but tar packs nothing for
-# a socket - "socket ignored", and still exit 0.
-rm -f "$MARKER"
+ck "#72 pack writes no marker to /"       "! test -e $MARKER"
+ck "#72 ...yet its archive carries one"   "tar tzf /tmp/remarked.tgz | grep -x ${MARKER#/}"
+ck "#72 ...which says what it is"         "tar xzOf /tmp/remarked.tgz ${MARKER#/} | grep 'format 2'"
+# Whatever is at the marker's path makes no difference now - even a socket,
+# for which tar packs nothing ("socket ignored", and still exit 0).
+mkdir -p "${MARKER%/*}"
 python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$MARKER"
 bashtion-pack > /tmp/resocket.tgz 2>/dev/null
-ck "#72 pack replaces a marker that is a socket" "test -f $MARKER && test -s $MARKER"
-ck "#72 ...and it is in the archive, as a file" \
+ck "#72 a socket at the marker's path is left alone" "test -S $MARKER"
+ck "#72 ...and the archive carries the marker, as a file" \
    "tar tvzf /tmp/resocket.tgz | grep -E '^-.* ${MARKER#/}\$'"
 ck "#72 ...which a format-1 unpacker refuses" \
    "! python3 /src/image/test/fixtures/state-format1.py unpack < /tmp/resocket.tgz"
+rm -f "$MARKER"
 
 echo "==> archive stays small (only changed system files)"
 size=$(stat -c %s /tmp/session.tgz)
@@ -423,10 +427,11 @@ ck "#72 format-1 unpacker: session.json not written"  "grep -q untouched /var/li
 #                               pack left behind in its /tmp (and, with
 #                               nomarker, in the marker's directory); exit 99
 #                               means the namespace itself could not be set up.
-#                               nomarker: #72's format-2 marker is gone and its
-#                               directory is a full tmpfs, so pack can create
-#                               the file but not fill it, as on a full ext4
+#                               nomarker: #72's format-2 marker is not on / and
+#                               its directory is a full tmpfs, where a file can
+#                               be created but not filled, as on a full ext4
 pack_in_ns() {
+  [ "${3:-}" != nomarker ] || mkdir -p "${MARKER%/*}"
   unshare --mount sh -c '
     mount -o remount,bind,ro / && mount -t tmpfs -o size="$1" tmpfs /tmp || exit 99
     if [ "$2" = full ]; then head -c 1048576 /dev/zero > /tmp/fill 2>/dev/null; fi
@@ -468,17 +473,20 @@ ck "#70 a home file saved read-only comes back"  "grep -qx canary-70 /home/user/
 ck "#70 its deletion list replays"               "! test -e /etc/bashtion-70-gone"
 ck "#70 unpack puts session.json back in place"  "grep -q bashtion-70-gone /var/lib/bashtion/session.json"
 
-echo "==> #70/#72 ...and it saves even when the format-2 marker cannot be put back"
-# The marker is the one thing pack may still write to /, and only once it has
-# gone. On a full root that write fails, and the save must not fail with it:
-# pack says so and archives the work without the marker.
+echo "==> #70/#72 ...and it carries the format-2 marker, which a full root cannot stop"
+# The marker used to be packed from /, and put back first if it had gone. On
+# a full root that write failed, and the save went out without the marker -
+# an archive a pre-#72 unpacker applies blind. Staged in /tmp with
+# session.json, it is in every archive pack emits, and / is never written.
 rc=0; pack_in_ns 8m room nomarker > /tmp/nomark.tgz 2> /tmp/nomark.err 3> /tmp/nomark.left || rc=$?
 sed 's/^/     /' /tmp/nomark.err
 ck "#70/#72 test setup: a private read-only root (rc=$rc)" "[ $rc != 99 ]"
-ck "#70/#72 pack succeeds without the marker"            "[ $rc = 0 ] && test -s /tmp/nomark.tgz"
-ck "#70/#72 ...says it could not write it"               "grep -q '^bashtion-pack: cannot write $MARKER' /tmp/nomark.err"
-ck "#70/#72 ...leaves no half-made marker, nor staging"  "! test -s /tmp/nomark.left"
+ck "#70/#72 pack succeeds"                               "[ $rc = 0 ] && test -s /tmp/nomark.tgz"
+ck "#70/#72 ...leaves nothing behind, there or in /tmp"  "! test -s /tmp/nomark.left"
 ck "#70/#72 ...and the archive still names this build"   "[ \"\$(meta /tmp/nomark.tgz build)\" = \"\$(bid)\" ]"
+lrc=0; tar tzf /tmp/nomark.tgz > /tmp/nomark.list 2>/dev/null || lrc=$?
+ck "#70/#72 ...and still carries the marker"             "[ $lrc = 0 ] && grep -qx ${MARKER#/} /tmp/nomark.list"
+ck "#70/#72 ...which a format-1 unpacker refuses"        "! python3 /src/image/test/fixtures/state-format1.py unpack < /tmp/nomark.tgz"
 
 echo "==> #70 ...and when even /tmp is full, it fails in one clean line"
 rc=0; pack_in_ns 4k full > /tmp/nospace.tgz 2> /tmp/nospace.err 3> /tmp/nospace.left || rc=$?

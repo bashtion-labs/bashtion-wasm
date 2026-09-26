@@ -62,7 +62,9 @@ FORMAT = 2
 # allowed to write. A format-1 unpacker never looks at format or build and
 # would apply this archive's system files to whatever build it runs on - an
 # old tab still open, a deploy rolled back - so instead it meets this,
-# refuses the whole archive, and writes nothing. Never extracted here.
+# refuses the whole archive, and writes nothing. Never extracted here, and
+# never a file on / either: pack stages it with the session metadata (see
+# cmd_pack), so nothing on the root filesystem can keep it out of an archive.
 MARKER = '/usr/lib/bashtion/archive-format-2'
 MARKER_TEXT = '''This member marks a bashtion session archive of format 2 or later.
 
@@ -322,43 +324,6 @@ def changed_system_paths(base):
     return keep, deleted
 
 
-def ensure_marker():
-    """Put MARKER back if it has gone, so no archive goes out without it.
-
-    tar is told to skip what it cannot read, and skips a socket without being
-    told, so a marker that is missing - or has become a socket - would drop
-    out of the archive silently. So anything but a regular file is replaced,
-    by a rename, which never leaves the path empty and never writes through
-    whatever is there. A directory cannot be renamed over, but tar packs one
-    under the marker's name all the same, and the name is all an old
-    unpacker reads. Failing to write it is reported, but never stops a save:
-    losing the work is worse than an archive an old build would accept.
-    """
-    try:
-        mode = os.lstat(MARKER).st_mode
-        if stat.S_ISREG(mode) or stat.S_ISDIR(mode):
-            return
-    except OSError:
-        pass
-    tmp = None
-    try:
-        os.makedirs(os.path.dirname(MARKER), exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(MARKER), prefix='.marker.')
-        with os.fdopen(fd, 'w') as f:
-            os.fchmod(f.fileno(), 0o644)
-            f.write(MARKER_TEXT)
-        os.replace(tmp, MARKER)
-    except OSError as e:
-        if tmp:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-        print('bashtion-pack: cannot write %s (%s); a bashtion from before '
-              'format 2 would not refuse this archive' % (MARKER, e.strerror),
-              file=sys.stderr)
-
-
 def cmd_pack():
     base, build = read_baseline()
     if not base:
@@ -367,13 +332,17 @@ def cmd_pack():
     system, deleted = changed_system_paths(base)
     home = [p for p in walk(HOME) if not skip(p)]
 
-    # The metadata is staged in /tmp and renamed into var/lib/bashtion/ inside
+    # The metadata and MARKER are staged in /tmp and renamed into place inside
     # the archive, never written to the root filesystem. A save has to work on
     # a full disk - that is exactly when someone most needs their work out -
     # and /tmp is a tmpfs, with room when / has none. Writing SESSION in place
     # only ever survived 100% because the image happened to ship a copy whose
-    # one block could be reused. mkdtemp, not a fixed name: this runs as root
-    # in a world-writable directory.
+    # one block could be reused. MARKER was packed from / too, and written
+    # back first whenever it had gone - tar skips what it cannot read, and
+    # packs nothing for a socket - so on a full root the write failed and the
+    # archive went out unmarked. Staged, every archive this saves carries
+    # both, or no archive is saved at all. mkdtemp, not a fixed name: this
+    # runs as root in a world-writable directory.
     try:
         stage = tempfile.mkdtemp(prefix='bashtion-pack-', dir='/tmp')
         atexit.register(shutil.rmtree, stage, True)
@@ -382,21 +351,22 @@ def cmd_pack():
             json.dump({'format': FORMAT, 'created': int(time.time()),
                        'roots': SYSTEM_ROOTS, 'home': HOME, 'deleted': deleted,
                        'build': build}, f)
+        marker = os.path.join(stage, os.path.basename(MARKER))
+        with open(marker, 'w') as f:
+            os.fchmod(f.fileno(), 0o644)
+            f.write(MARKER_TEXT)
     except OSError as e:
         sys.exit('bashtion-pack: cannot stage the session metadata in /tmp: %s'
                  % (e.strerror or e))
-    # tar knows the file only by where it really is, so rename it on the way
-    # in: an anchored match on this one path, every metacharacter escaped. The
-    # new name is SESSION_REL, the one member unpack reads the metadata from.
-    rename = 's,^%s$,%s,' % (
-        ''.join('\\' + c if c in '\\.[]*^$' else c for c in staged.lstrip('/')),
-        SESSION_REL)
+    # tar knows each file only by where it really is, so rename it on the way
+    # in: an anchored match on that one path, every metacharacter escaped. The
+    # new names are SESSION_REL, the one member unpack reads the metadata
+    # from, and MARKER_REL, the one it skips.
+    rename = ['s,^%s$,%s,' % (
+        ''.join('\\' + c if c in '\\.[]*^$' else c for c in path.lstrip('/')), name)
+        for path, name in ((staged, SESSION_REL), (marker, MARKER_REL))]
 
-    # The one write pack may still make to /, and only when the marker has
-    # gone. On a full or read-only root it fails, is reported, and the save
-    # goes on without it (see ensure_marker).
-    ensure_marker()
-    members = home + system + [staged, MARKER]
+    members = home + system + [staged, marker]
     bytes_total = 0
     for p in members:
         try:
@@ -425,8 +395,9 @@ def cmd_pack():
     tar = subprocess.Popen(
         ['tar', 'czf', '-', '--numeric-owner', '--acls',
          '--xattrs', '--xattrs-include=*', '--no-recursion',
-         '--ignore-failed-read', '--transform', rename,
-         '-C', '/', '--null', '-T', '-'],
+         '--ignore-failed-read']
+        + [arg for expr in rename for arg in ('--transform', expr)]
+        + ['-C', '/', '--null', '-T', '-'],
         stdin=subprocess.PIPE)
     tar.communicate(listing.encode())
     # 1 is "some files differed while being read" - normal for a live home

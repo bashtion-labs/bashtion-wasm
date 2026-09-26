@@ -23,6 +23,8 @@
 // which the shell says nothing. shell-context is a login shell with it, the
 // script copied out of 26.04's systemd package (259.5), so each prompt and
 // each command comes bracketed in OSC 3008 as it does on the guest's console.
+// foreground-prompt is the same, with 26.04's sudo (1.9.17p2, its stock
+// sudoers, `user` NOPASSWD) as the guest has it.
 //
 // Those passed through one tty, the guest's, so their lines end \r\n. In the
 // page they then pass through xterm-pty's ONLCR as well; mirror() applies it,
@@ -255,6 +257,41 @@ export const CAPTURES = {
     ['enter', '\r\n\x1b]3008;end=4480782c-670a-4e39-bf52-4c2803a87cee;exit=success\x1b\\\x1b]3008;start=87475e4' +
       '4-9eb9-44df-849e-d591a53875e2;machineid=;user=user;hostname=bashtion;bootid=da157382-da0d-4175-b' +
       'b4c-d4f381c5a52b;pid=00000000000000000007;type=shell;cwd=/home/user\x1b\\user@bashtion:~$ '],
+  ] },
+  // The same login shell, and a whole Ubuntu prompt on the screen while a
+  // command has the terminal: `user@bashtion:~$ ` typed into `cat >
+  // /tmp/notes` a byte at a time, then Enter and Ctrl-D; `read -p` printing
+  // it; and `sudo -s`, whose root shell reads no profile.d and so says
+  // nothing, then `exit`.
+  'foreground-prompt': { guest: true, steps: [
+    ['boot', '\x1b]3008;start=8cf3320a-825b-45bb-bbb8-ee2e2996e76a;machineid=;user=user;hostname=bashtion' +
+      ';bootid=da157382-da0d-4175-bb4c-d4f381c5a52b;pid=00000000000000000009;type=shell;cwd=/home/user' +
+      '\x1b\\user@bashtion:~$ '],
+    ['cat', 'cat > /tmp/notes\r\n' +
+      '\x1b]3008;start=fbe541d1-5ce1-4286-975a-a663a460ae0c;machineid=;user=user;hostname=bashtion;bootid' +
+      '=da157382-da0d-4175-bb4c-d4f381c5a52b;pid=00000000000000000009;type=command;cwd=/home/user\x1b\\'],
+    ['type', 'user@bashtion:~$ '],
+    ['eof', '\r\n' +
+      '\x1b]3008;end=fbe541d1-5ce1-4286-975a-a663a460ae0c;exit=success\x1b\\\x1b]3008;start=8cf3320a-825b' +
+      '-45bb-bbb8-ee2e2996e76a;machineid=;user=user;hostname=bashtion;bootid=da157382-da0d-4175-bb4c-d4f3' +
+      '81c5a52b;pid=00000000000000000009;type=shell;cwd=/home/user\x1b\\user@bashtion:~$ '],
+    ['read', 'read -p \'user@bashtion:~$ \' answer\r\n' +
+      '\x1b]3008;start=09fc8bf6-d924-4625-8c66-d2e6dfc7d2b5;machineid=;user=user;hostname=bashtion;bootid' +
+      '=da157382-da0d-4175-bb4c-d4f381c5a52b;pid=00000000000000000009;type=command;cwd=/home/user\x1b\\us' +
+      'er@bashtion:~$ '],
+    ['answer', 'yes\r\n' +
+      '\x1b]3008;end=09fc8bf6-d924-4625-8c66-d2e6dfc7d2b5;exit=success\x1b\\\x1b]3008;start=8cf3320a-825b' +
+      '-45bb-bbb8-ee2e2996e76a;machineid=;user=user;hostname=bashtion;bootid=da157382-da0d-4175-bb4c-d4f3' +
+      '81c5a52b;pid=00000000000000000009;type=shell;cwd=/home/user\x1b\\user@bashtion:~$ '],
+    ['sudo -s', 'sudo -s\r\n' +
+      '\x1b]3008;start=f50c98b6-649a-443c-ba08-54a7bd2123a0;machineid=;user=user;hostname=bashtion;bootid' +
+      '=da157382-da0d-4175-bb4c-d4f381c5a52b;pid=00000000000000000009;type=command;cwd=/home/user\x1b\\ro' +
+      'ot@bashtion:/home/user# '],
+    ['exit', 'exit\r\n' +
+      'exit\r\n' +
+      '\x1b]3008;end=f50c98b6-649a-443c-ba08-54a7bd2123a0;exit=success\x1b\\\x1b]3008;start=8cf3320a-825b' +
+      '-45bb-bbb8-ee2e2996e76a;machineid=;user=user;hostname=bashtion;bootid=da157382-da0d-4175-bb4c-d4f3' +
+      '81c5a52b;pid=00000000000000000009;type=shell;cwd=/home/user\x1b\\user@bashtion:~$ '],
   ] },
   monitor: { guest: false, steps: [
     ['ctrl-a c', 'QEMU 10.2.1 monitor - type \'help\' for more information\r\r\n' +

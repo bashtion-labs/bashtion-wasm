@@ -557,30 +557,34 @@ const SERIALTAP = (() => {
   // in vim is a root prompt.
   //
   // A shape cannot tell a shell from whatever else is reading the keyboard,
-  // though. `# ` typed at the start of a line into `cat > notes`, or vim's
-  // `/# ` search on its bottom row (under the guest's TERM=vt220 vim draws
-  // on the main screen), is the last thing on the screen and prompt-shaped.
-  // So atPrompt() also asks the shell. The guest's login shell runs
-  // systemd's shell integration, which says (OSC 3008) when it hands the
-  // terminal to a command and when it takes it back for a prompt. While a
-  // command has it, a bare `$ ` or `# ` is not the shell's. Only a whole
-  // `user@host:dir$ ` counts then: a nested bash (`sudo -s`, `sudo su`,
-  // `bash`) reads no profile.d, so it prompts with Ubuntu's PS1 and says
-  // nothing, and refusing it would starve the resize sync for as long as
-  // the student works in it. With no word from the shell at all - before
-  // the first prompt, or a guest without the integration - the shape alone
-  // decides, as it always did.
+  // though. `# ` typed at the start of a line into `cat > notes`, vim's `/# `
+  // search on its bottom row (under the guest's TERM=vt220 vim draws on the
+  // main screen), `read -p 'user@bashtion:~$ '`: each is the last thing on
+  // the screen and prompt-shaped, Ubuntu's whole PS1 included. So atPrompt()
+  // also asks the shell. The guest's login shell runs systemd's shell
+  // integration, which says (OSC 3008) when it hands the terminal to a
+  // command and when it takes it back for a prompt, and while a command has
+  // it nothing on the screen is the shell's prompt, whatever its shape.
+  //
+  // A nested shell is no exception. One that `bash`, `sudo -s` or `sudo su`
+  // starts reads no profile.d and says nothing, so a resize waits until it
+  // exits - and the login shell's prompt is where a resize belongs anyway.
+  // Ubuntu's sudo (Defaults use_pty) puts the shell it starts on a pty of its
+  // own: `stty` typed there resizes that pty alone, and the login shell's
+  // tty is still the old size once it exits. (`sudo -i` starts a login shell,
+  // which does say it has the terminal; a resize made there still lands on
+  // sudo's pty alone.) With no word from the shell at all - before the first
+  // prompt, or a guest without the integration - the shape alone decides, as
+  // it always did.
   //
   // Wherever the model cannot vouch for its reading of that line, the answer
   // is no. A wrong "busy" only delays the page; a wrong "idle" types into
   // whatever owns the keyboard.
-  const PS1 = '[^\\s@$#]+@[^\\s:$#]+:[^$#]*';
-  const PROMPT = new RegExp('^(?:\\S*|' + PS1 + ')[$#] $');
-  const NESTED = new RegExp('^' + PS1 + '[$#] $');
+  const PROMPT = /^(?:\S*|[^\s@$#]+@[^\s:$#]+:[^$#]*)[$#] $/;
   function atPrompt(win) {
     const scr = screenOf(win), c = scr.cursorLine();
-    const shape = scr.context() === 'command' ? NESTED : PROMPT;
-    return c.sure && shape.test(c.before) && !/\S/.test(c.after) && !c.below;
+    return scr.context() !== 'command' &&
+      c.sure && PROMPT.test(c.before) && !/\S/.test(c.after) && !c.below;
   }
 
   return {

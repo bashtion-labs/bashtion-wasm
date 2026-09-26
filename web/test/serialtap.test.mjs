@@ -212,22 +212,49 @@ test('#69 atPrompt: `# ` typed into a running command is not a prompt', () => {
   // thing on the screen with nothing after it - prompt-shaped - and the page
   // would type `stty rows …` and Enter into the file or the search. What
   // rules it out is the shell's own word (OSC 3008) that a command has the
-  // terminal. A nested bash says nothing and prompts with Ubuntu's PS1: that
-  // is still a prompt, and a bare `# ` in a command it runs still is not.
+  // terminal. A nested bash reads no profile.d and says nothing, so the
+  // login shell's word stands until it exits: neither its Ubuntu PS1 nor a
+  // bare `# ` in a command it runs is taken for the login shell's prompt.
   for (const [step, line, idle] of [
     ['boot', 'user@bashtion:~$', true],
     ['comment', '#', false],
     ['eof', 'user@bashtion:~$', true],
     ['search', '/#', false],
     ['quit', 'user@bashtion:~$', true],
-    ['bash', 'user@bashtion:~$', true],
+    ['bash', 'user@bashtion:~$', false],
     ['nested comment', '#', false],
-    ['nested eof', 'user@bashtion:~$', true],
+    ['nested eof', 'user@bashtion:~$', false],
     ['exit', 'user@bashtion:~$', true],
     ['enter', 'user@bashtion:~$', true],
   ]) {
     assert.equal(lastOf(mirror('shell-context', step)), line, step);
     assert.equal(atCap('shell-context', step), idle, step);
+  }
+});
+
+test('#69 atPrompt: a whole Ubuntu prompt is not a prompt while a command has the terminal', () => {
+  // The login shell has said a command has the terminal, and the screen then
+  // ends `user@bashtion:~$ ` with nothing after it: typed into `cat`, or
+  // printed by `read -p`. Neither is a shell, and the page would type
+  // `stty rows …` and Enter into the file or the answer - and record the
+  // geometry as told. Shape cannot tell them from a nested shell's prompt,
+  // so while a command has the terminal nothing is a prompt. That includes
+  // the root shell `sudo -s` starts, which is a shell but says nothing: under
+  // Ubuntu's sudo (Defaults use_pty) it is on a pty of its own, and `stty`
+  // typed into it resizes that pty alone - the login shell's tty keeps its
+  // old size after `exit`. The login shell's own prompt is where it lands.
+  for (const [step, line, idle] of [
+    ['boot', 'user@bashtion:~$', true],
+    ['cat', '', false],
+    ['type', 'user@bashtion:~$', false],
+    ['eof', 'user@bashtion:~$', true],
+    ['read', 'user@bashtion:~$', false],
+    ['answer', 'user@bashtion:~$', true],
+    ['sudo -s', 'root@bashtion:/home/user#', false],
+    ['exit', 'user@bashtion:~$', true],
+  ]) {
+    assert.equal(lastOf(mirror('foreground-prompt', step)), line, step);
+    assert.equal(atCap('foreground-prompt', step), idle, step);
   }
 });
 
@@ -245,8 +272,10 @@ test('#69 atPrompt takes the shell\'s last complete word on whose the terminal i
   // an OSC abandoned before its end is not a word, and nor is a DCS saying it
   assert.equal(read(word('command') + word('shell', '\x18')), false);
   assert.equal(read(word('command') + '\x1bP3008;start=1f;type=shell\x1b\\'), false);
-  // a whole `user@host:dir$ ` is a nested bash's, and that one still counts
-  assert.equal(at(word('command') + '\r\nroot@bashtion:/srv/my files# '), true);
+  // nor is any shape an exception: a whole `user@host:dir$ ` is what a
+  // program prompting like a shell prints too (`input('root@bashtion:… ')`)
+  assert.equal(at(word('command') + '\r\nroot@bashtion:/srv/my files# '), false);
+  assert.equal(at(word('shell') + '\r\nroot@bashtion:/srv/my files# '), true);
 });
 
 test('#69 atPrompt follows apt\'s progress bar through its scroll region', () => {
@@ -372,6 +401,7 @@ const ENDS = {
   nano: ['#', false],
   apt: ['root@bashtion:~#', true],
   'shell-context': ['user@bashtion:~$', true],
+  'foreground-prompt': ['user@bashtion:~$', true],
   monitor: ['(qemu)', false],    // after `info status`
 };
 

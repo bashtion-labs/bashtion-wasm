@@ -136,7 +136,9 @@ you still need those changes, make them again.
   `ulimit -f unlimited` removes it for that terminal. A `sudo` command starts fresh with the
   limit back on, so for admin work type `sudo -i` first, then `ulimit -f unlimited`.
 - **The window size.** The screen fits your browser window. If you make the window bigger, you
-  get more room. `stty size` tells you how many rows and columns you have.
+  get more room. `stty size` tells you how many rows and columns you have. A new size reaches
+  Linux once you are back at your own `$` prompt: when a program finishes, or when you leave a
+  root shell (`sudo -s`, `sudo su`) with `exit`.
 - **It's your own computer.** Anything you do only affects your browser tab. You cannot break
   anyone else's system, and you cannot harm your real computer. If something goes wrong, just
   reload the page and start fresh.

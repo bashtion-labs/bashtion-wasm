@@ -378,6 +378,17 @@ made it into the deploy.
   traffic has moved. Moving the fork pin also changes `vm.state`, so it is a
   new snapshot set and a new R2 tag as well.
 
+  **Deploy an engine change when nobody is using the lab.** A tab that is
+  already open keeps the loader and engine it started with, except in one
+  place: emscripten starts four threads up front and more only when the VM
+  needs more at once than it has before, and each new thread loads `out.js`
+  again by its fixed name. After the deploy that is the new `out.js`, run
+  against the old engine the tab hands it, and the VM can fail mid-session,
+  losing whatever the student has not downloaded. (A page loaded in the
+  seconds before the switch can also find its old engine no longer served; a
+  reload fixes that.) If an engine change has to go out during a session,
+  have students download their work and reload first.
+
   `vendor/` is renamed by neither. It holds xterm and xterm-pty, and xterm-pty
   is pinned exactly inside the fork tree (the fork's Dockerfile installs
   0.10.1, and `build.yml` says why it stays there), so it changes only if a

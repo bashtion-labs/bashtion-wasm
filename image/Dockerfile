@@ -486,7 +486,7 @@ RUN set -e; rm -f /rootfs/etc/motd; printf '%s\n' \
       '            at once and uses no space. `ulimit -f unlimited` lifts that' \
       '            for one shell (sudo starts a new one: lift it in `sudo -i`).' \
       '  Saving    Nothing is saved automatically. Use "Download my work"' \
-      '            before you close the tab.' \
+      '            before you close the tab. /dev/vdb is never saved.' \
       '  Docs      Manual pages are installed: try `man man` or `man -k disk`.' \
       '' \
       > /rootfs/etc/motd; \

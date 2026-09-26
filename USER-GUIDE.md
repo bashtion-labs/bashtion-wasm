@@ -109,6 +109,9 @@ deleted stays deleted.
 way saving works here. If you need one after loading your work back, install it again — it
 takes a moment and needs no internet.
 
+**The spare disk `/dev/vdb` is not saved.** Whatever you put on it — files, partitions,
+volumes — is gone when the page reloads, and the disk starts empty again.
+
 **After bashtion is updated, only your home folder comes back.** A saved file remembers which
 version of bashtion made it. If you load it into a different version — for example, after
 bashtion was updated — the window says **"Only your home folder was restored"**. All your
@@ -124,8 +127,8 @@ you still need those changes, make them again.
   ones that were packed in ahead of time. It will not download new ones from the internet.
   Try `sudo apt install tree` to see it work.
 - **A spare disk.** There is a second, empty 4 GB disk called `/dev/vdb`. Use it for anything
-  large, and for practising with partitions and filesystems. The main disk is small:
-  `df -h /` shows how much room is left on it.
+  large, and for practising with partitions and filesystems. It is not saved: it starts empty
+  every time. The main disk is small: `df -h /` shows how much room is left on it.
 - **A size limit on files.** One file can be at most 4 GB, the size of the spare disk. This is
   on purpose. Without it, a command like `fallocate -l 10G big.img` fills the main disk right
   up before it fails, and leaves a half-made file behind. With it, the command stops at once
@@ -162,8 +165,9 @@ really does go wrong, the window tells you — it does not just sit there.
 
 **It says "No space left on device."**
 The main disk is full. `df -h /` shows it. Delete big files you made and no longer need, and
-put large things on the spare disk `/dev/vdb` instead. **Download my work** still works while
-the disk is full, so you can save first.
+put large things on the spare disk `/dev/vdb` instead — but it is not saved, so use it only for
+things you can make again. **Download my work** still works while the disk is full, so you can
+save first.
 
 **It says "File size limit exceeded."**
 You asked for a file bigger than 4 GB, which is more than this machine has room for anywhere.

@@ -1,11 +1,21 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const read = (p) => readFileSync(join(ROOT, p), 'utf8');
+
+// Every Markdown document in the repository, build output and upstream code
+// aside - not only the deploy guide, which is where the check began while the
+// top-level README went on naming the bundles without their tag.
+const SKIP = new Set(['.git', 'node_modules', 'third_party', 'out', 'dist', 'public']);
+const markdown = (dir = '') => readdirSync(join(ROOT, dir), { withFileTypes: true }).flatMap((e) => {
+  const p = dir ? `${dir}/${e.name}` : e.name;
+  if (e.isDirectory()) return SKIP.has(e.name) ? [] : markdown(p);
+  return e.name.endsWith('.md') ? [p] : [];
+});
 
 // The R2 bundles are versioned (#68), and worker.js is where the tag lives:
 // pack-site.sh refuses a build whose bundle names are not exactly the keys
@@ -31,13 +41,17 @@ test('the deploy guide builds with the tag worker.js serves', () => {
   }
 });
 
-test('every snapshot-set bundle the deploy guide names carries the served tag', () => {
+test('every snapshot-set bundle a document names carries the served tag', () => {
   const [tag] = tags;
-  const named = [...guide.matchAll(/load-(rootfsB|state|lab)(?:\.([^.\s"'`/]+))?\.data/g)];
-  assert.ok(named.length > 0, 'deploy/README.md names no snapshot-set bundle');
-  for (const [name, bundle, t] of named) {
-    assert.equal(t, tag, `deploy/README.md names ${name}; worker.js serves the ${tag} set`);
-    // the lab disk is a static asset; the other two are R2 keys the Worker must know
-    if (bundle !== 'lab') assert.ok(served.has(name), `worker.js does not serve ${name}`);
+  const docs = markdown();
+  for (const doc of ['README.md', 'deploy/README.md']) assert.ok(docs.includes(doc), `${doc} not scanned`);
+  const bundles = (text) => [...text.matchAll(/load-(rootfsB|state|lab)(?:\.([^.\s"'`/]+))?\.data/g)];
+  assert.ok(bundles(guide).length > 0, 'deploy/README.md names no snapshot-set bundle');
+  for (const doc of docs) {
+    for (const [name, bundle, t] of bundles(read(doc))) {
+      assert.equal(t, tag, `${doc} names ${name}; worker.js serves the ${tag} set`);
+      // the lab disk is a static asset; the other two are R2 keys the Worker must know
+      if (bundle !== 'lab') assert.ok(served.has(name), `worker.js does not serve ${name}`);
+    }
   }
 });

@@ -226,6 +226,10 @@ def run_checks(con):
                            "-e 'ulimit -f unlimited' /etc/motd")
     check('#70 the motd gives the disk size, the cap and how to lift it',
           out.strip() == '3', out)
+    # 4 GiB is the disk's size, not what the tab can hold: what is written to
+    # it lives in the page's memory
+    rc, out = capture(con, "grep -c 'do not fill it' /etc/motd")
+    check('#70 the motd says not to fill /dev/vdb', out.strip() == '1', out)
     for who, sudo, path in (('the user', '', '/var/tmp/bashtion-70.img'),
                             ('root via sudo', 'sudo ', '/bashtion-70.img')):
         # Measured and cleaned up in one command, so a failure strands nothing.

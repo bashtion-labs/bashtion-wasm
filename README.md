@@ -109,9 +109,10 @@ constrains both what can be sent and how.
 - deletions, so removing a file is a change like any other;
 - ACLs and capability xattrs.
 
-Installed packages (`/var/lib/dpkg` plus their unpacked files) and `/var` generally are **not**
-captured - they are far too large for this channel. `apt install` from the offline repo has to
-be repeated after a restore. The UI says so at save time.
+Installed packages (`/var/lib/dpkg` plus their unpacked files), `/var` generally, and anything
+on the spare disk `/dev/vdb` are **not** captured - they are far too large for this channel.
+`apt install` from the offline repo has to be repeated after a restore. The UI says so at save
+time.
 
 **An archive is tied to the build that saved it.** Its system half is a diff from that image's
 baseline, and its deletion list is that image's file list, so it only means something on the
@@ -171,9 +172,14 @@ you see only "Saving your work..." and a completion tick, never a wall of base64
   The guest is configured to be *coherently* offline rather than half-configured:
   `systemd-resolved` is masked, `/etc/resolv.conf` and `/etc/netplan/` say why they are empty,
   and `/etc/motd` states it at the start of every session.
-- **Installed packages do not survive a save.** Everything else about a session does, restored
-  onto the same build of the image; onto a different build only the home directory comes back.
+- **A save keeps your files, not the whole machine.** It brings back `/home/user` and what
+  changed under `/etc`, `/opt`, `/srv`, `/usr/local`, `/root` and `/var/spool/cron` - those
+  only onto the same build of the image; onto a different build, the home directory alone.
+  Installed packages, the rest of `/var` and everything on `/dev/vdb` do not survive a save.
   See "Saving work" for what travels and why the rest cannot.
+- **`/dev/vdb` is practice space, not storage.** It is 4 GiB on paper, but it is a qcow2 image
+  held in the page's memory, and it grows there as the guest writes to it: writing gigabytes to
+  it can run the tab out of memory, taking any unsaved work with it.
 - **Boot is slow, restore is fast.** A cold systemd boot under emulation takes minutes; the
   snapshot-restore path is why a real session starts in seconds. Development boots (building a
   fresh snapshot) still pay the full cost.

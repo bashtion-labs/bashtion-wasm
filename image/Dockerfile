@@ -480,8 +480,9 @@ RUN set -e; rm -f /rootfs/etc/motd; printf '%s\n' \
       '            outside this VM is reachable. `apt install` is served from' \
       '            the offline repository in /srv/apt.' \
       '  Storage   / has limited room: `df -h /` shows what is left. /dev/vdb' \
-      "            is a spare ${VDB_GIB} GiB disk, empty and unpartitioned: use it for" \
-      '            anything large, and for partitioning, LVM and quota work.' \
+      "            is a spare ${VDB_GIB} GiB disk, empty and unpartitioned: practise" \
+      '            partitioning, LVM and quotas on it, but do not fill it - what' \
+      '            you write to it is held in the memory of this browser tab.' \
       "            A file may not exceed ${VDB_GIB} GiB, so an oversized fallocate fails" \
       '            at once and uses no space. `ulimit -f unlimited` lifts that' \
       '            for one shell (sudo starts a new one: lift it in `sudo -i`).' \
@@ -569,8 +570,9 @@ RUN set -e; head=$(head -1 /rootfs/usr/local/lib/bashtion/baseline.tsv); \
 # to 1%: this is a single-user disposable VM, and 5% held back ~40 MB for a
 # fsck that has nowhere to run. The ceiling is real - the whole rootfs image is
 # resident in the wasm heap (-sTOTAL_MEMORY=2300MB, shared with 512 MB of guest
-# RAM and the 128 MB TB cache) - so FREE_MB is a deliberate balance and
-# /dev/vdb (VDB_GIB, qcow2, grows on write) is the place for anything large.
+# RAM and the 128 MB TB cache) - so FREE_MB is a deliberate balance. /dev/vdb
+# (VDB_GIB, qcow2, grows on write) is no way round that ceiling: what the
+# guest writes there lands in the same heap (see the practice disk below).
 ARG FREE_MB=192
 RUN set -e; content_mb=$(( $(du -s --block-size=1024 /rootfs | cut -f1) / 1024 )); \
     size_mb=$(( (content_mb + ${FREE_MB}) * 108 / 100 )); \

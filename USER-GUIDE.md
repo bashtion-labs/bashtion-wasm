@@ -126,9 +126,11 @@ you still need those changes, make them again.
 - **Installing programs.** You can install some programs with `sudo apt install`, but only the
   ones that were packed in ahead of time. It will not download new ones from the internet.
   Try `sudo apt install tree` to see it work.
-- **A spare disk.** There is a second, empty 4 GB disk called `/dev/vdb`. Use it for anything
-  large, and for practising with partitions and filesystems. It is not saved: it starts empty
-  every time. The main disk is small: `df -h /` shows how much room is left on it.
+- **A spare disk.** There is a second, empty 4 GB disk called `/dev/vdb`, for practising with
+  partitions, filesystems and LVM. It is not a place to keep big files: everything written to
+  it is held in your browser's memory, so filling it up can crash the tab and lose any work you
+  have not downloaded. It is not saved either: it starts empty every time. The main disk is
+  small: `df -h /` shows how much room is left on it.
 - **A size limit on files.** One file can be at most 4 GB, the size of the spare disk. This is
   on purpose. Without it, a command like `fallocate -l 10G big.img` fills the main disk right
   up before it fails, and leaves a half-made file behind. With it, the command stops at once
@@ -166,10 +168,10 @@ connection between the page and the Linux system, so a lot of files take a while
 really does go wrong, the window tells you — it does not just sit there.
 
 **It says "No space left on device."**
-The main disk is full. `df -h /` shows it. Delete big files you made and no longer need, and
-put large things on the spare disk `/dev/vdb` instead — but it is not saved, so use it only for
-things you can make again. **Download my work** still works while the disk is full, so you can
-save first.
+The main disk is full. `df -h /` shows it. Delete big files you made and no longer need.
+**Download my work** still works while the disk is full, so you can save first. The spare disk
+`/dev/vdb` is not extra room for big files: it is not saved, and filling it can crash the tab
+(see "A spare disk" above).
 
 **It says "File size limit exceeded."**
 You asked for a file bigger than 4 GB, which is more than this machine has room for anywhere.

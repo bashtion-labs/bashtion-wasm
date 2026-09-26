@@ -1,7 +1,10 @@
 # Fork engine patches
 
-Applied at build time to the ktock/qemu-wasm fork (the **primary** engine), which is cloned
-fresh in `.github/workflows/build.yml`. The patches in `../qemu` and `../toolchain` apply to
+Applied at build time to the ktock/qemu-wasm fork (the **primary** engine), which
+`.github/workflows/build.yml` fetches at the commit pinned in `REVISION`. `snapshot.yml`
+builds its native capture QEMU from the same commit, because a `vm.state` from any other tree
+hangs the engine's `-incoming` silently; `scripts/fetch-fork.sh` does the fetch for both.
+A patch here is written against that commit, so move them together. The patches in `../qemu` and `../toolchain` apply to
 `third_party/qemu` (upstream), which is only the dispatch-only experimental TCI lane.
 
 ## ptyfix.py

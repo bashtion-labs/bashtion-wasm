@@ -10,17 +10,21 @@
 #   usage: scripts/pack-site.sh --engine DIR --guest DIR [--out DIR]
 #
 #     --engine  the `qemu-engine` artifact: out.js, the .wasm, the pthread
-#               worker, vendor/ and pc-bios/
+#               worker, vendor/, pc-bios/ and FORK_REVISION
 #     --guest   the `snapshot-set` artifact: vmlinuz, rootfs-booted.ext4,
-#               vdb.qcow2 and vm.state
+#               vdb.qcow2, vm.state and FORK_REVISION
 #     --out     where to assemble (default out/site)
-#     --r2-tag  version suffix for the snapshot-set bundles - the two on R2 and
-#               the lab disk - e.g. --r2-tag v3 gives load-rootfsB.v3.data,
-#               load-state.v3.data and load-lab.v3.data. Must be the tag
-#               deploy/worker.js serves (see there for when to bump it).
+#     --r2-tag  version suffix for the snapshot-set bundles - the two on R2,
+#               the lab disk and the ROMs - e.g. --r2-tag v3 gives
+#               load-rootfsB.v3.data, load-state.v3.data, load-lab.v3.data and
+#               load-rom.v3.data. Must be the tag deploy/worker.js serves (see
+#               there for when to bump it).
 #
 # Files are located by NAME anywhere under the given directory, so it does not
-# matter how download-artifact happened to nest them.
+# matter how download-artifact happened to nest them - but each name must be
+# there exactly once. Two copies means two artifacts in one directory (a
+# reused download directory, or both runs downloaded into one), and nothing
+# says which copy belongs with which.
 #
 # The five packages, and why each guest path is what it is: web/module.js names
 # /pack-rom/, /pack-kernel/vmlinuz, /pack-rootfs/rootfs.ext4,
@@ -33,6 +37,18 @@
 # out/image/rootfs.ext4. A migration stream restores RAM and device state that
 # reference the disk as it was when the snapshot was taken; they are a matched
 # set and mixing them silently produces a VM that will not resume.
+#
+# The engine and the snapshot are a matched pair in the same way: vm.state
+# only restores in an engine built from the fork tree that captured it, and a
+# mismatch is a silent hang at -incoming. Both artifacts record that tree in
+# FORK_REVISION (scripts/fetch-fork.sh), and this refuses two that differ.
+#
+# The engine is published as qemu-system-x86_64.<sha256 prefix>.wasm, and
+# out.js is rewritten to fetch that name. It is served as immutable for a
+# year, from the edge cache and from browsers' own, so a fixed name would pair
+# a redeployed out.js with the old engine - and emscripten's loader and its
+# .wasm must come from the same build. A name taken from the bytes cannot be
+# reused for different ones. deploy/worker.js must serve exactly that name.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -60,7 +76,7 @@ while [ $# -gt 0 ]; do
     --guest)  GUEST="$2";  shift 2 ;;
     --out)    OUT="$2";    shift 2 ;;
     --r2-tag) R2TAG="$2";  shift 2 ;;
-    -h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -70,22 +86,26 @@ done
 [ -d "$GUEST" ]  || die "no such directory: $GUEST"
 command -v docker >/dev/null || die "docker is required (it runs file_packager)"
 
-# Locate one file by name, anywhere under a directory. Fails loudly rather than
-# packaging something incomplete.
-find_one() {
-  local dir="$1" name="$2" hit
-  hit="$(find "$dir" -type f -name "$name" -print -quit 2>/dev/null || true)"
-  [ -n "$hit" ] || die "could not find $name under $dir"
-  printf '%s' "$hit"
+# Locate the one file matching a find(1) test anywhere under a directory
+# (meson's *.p/ object directories aside), called WHAT in messages. Fails
+# loudly rather than packaging something incomplete, or picking one of two.
+find_any() {
+  local dir="$1" what="$2" hits n
+  shift 2
+  hits="$(find "$dir" -type f "$@" -not -path '*.p/*' 2>/dev/null || true)"
+  n="$(printf '%s' "$hits" | grep -c . || true)"
+  [ "$n" -gt 0 ] || die "could not find $what under $dir"
+  [ "$n" -eq 1 ] || die "$n copies of $what under $dir - use one artifact per directory, downloaded fresh:
+$(printf '%s\n' "$hits" | sed 's/^/      /')"
+  printf '%s' "$hits"
 }
+find_one() { find_any "$1" "$2" -name "$2"; }
 
 echo "==> locating inputs"
 # emscripten emits the engine's JS as `qemu-system-x86_64` (no extension); the
 # page loads it as ./out.js. That rename used to live only in the Makefile's
 # pack target, so the CI artifact does not carry it.
-OUTJS="$(find "$ENGINE" -type f \( -name out.js -o -name qemu-system-x86_64 \) \
-          -not -path '*.p/*' -print -quit 2>/dev/null || true)"
-[ -n "$OUTJS" ] || die "could not find out.js or qemu-system-x86_64 under $ENGINE"
+OUTJS="$(find_any "$ENGINE" 'out.js (or qemu-system-x86_64)' \( -name out.js -o -name qemu-system-x86_64 \))"
 WASM="$(find_one "$ENGINE" qemu-system-x86_64.wasm)"
 WORKER="$(find_one "$ENGINE" qemu-system-x86_64.worker.js)"
 KERNEL="$(find_one "$GUEST" vmlinuz)"
@@ -98,6 +118,26 @@ for f in "$OUTJS" "$WASM" "$WORKER" "$KERNEL" "$ROOTFS" "$LAB" "$STATE"; do
   printf '    %10s  %s\n' "$(du -h "$f" | cut -f1)" "${f#$ROOT/}"
 done
 
+# The fork commit each artifact was built from, read from beside the file it
+# vouches for - the engine's .wasm, the snapshot's vm.state - where the
+# workflows write it, so a marker can only ever describe its own artifact. An
+# artifact without one predates the pin (#73) and could be from any tree.
+fork_rev() {
+  local f="$(dirname "$1")/FORK_REVISION" rev
+  [ -f "$f" ] || die "the $2 artifact records no FORK_REVISION beside $(basename "$1"), so which fork tree built it is unknown - use one built since the fork was pinned (patches/fork/REVISION)"
+  rev="$(tr -d '[:space:]' < "$f")"
+  [[ "$rev" =~ ^[0-9a-f]{40}$ ]] || die "the $2 artifact's FORK_REVISION is not a commit id: '$rev'"
+  printf '%s' "$rev"
+}
+ENGINE_REV="$(fork_rev "$WASM" qemu-engine)"
+GUEST_REV="$(fork_rev "$STATE" snapshot-set)"
+[ "$ENGINE_REV" = "$GUEST_REV" ] || die "the engine and the snapshot come from different fork trees:
+      qemu-engine   $ENGINE_REV
+      snapshot-set  $GUEST_REV
+    vm.state would hang the engine's -incoming. Use artifacts built from one
+    patches/fork/REVISION."
+echo "    fork tree   $ENGINE_REV (engine and snapshot agree)"
+
 rm -rf "$OUT"; mkdir -p "$OUT/vendor" "$OUT/rom"
 for r in bios-256k.bin vgabios-stdvga.bin kvmvapic.bin linuxboot_dma.bin; do
   [ -f "$ROM_DIR/$r" ] || die "missing ROM $r in $ROM_DIR"
@@ -107,8 +147,26 @@ for v in xterm.js xterm.css xterm-pty.js; do
   [ -f "$VENDOR_DIR/$v" ] || die "missing vendor file $v in $VENDOR_DIR"
   cp "$VENDOR_DIR/$v" "$OUT/vendor/"
 done
-cp "$OUTJS" "$OUT/out.js"
-cp "$WASM" "$OUT/qemu-system-x86_64.wasm"
+# The engine, under a name taken from its bytes, and a loader that fetches
+# exactly that name. emscripten writes the .wasm's name into out.js as a string
+# literal (once for Module.locateFile, once for import.meta.url), so rename
+# every occurrence and check that none of the old name is left.
+WASM_NAME="qemu-system-x86_64.$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()[:16])' "$WASM").wasm"
+cp "$WASM" "$OUT/$WASM_NAME"
+python3 - "$OUTJS" "$OUT/out.js" "$WASM_NAME" <<'PYEOF'
+import sys
+src, dst, name = sys.argv[1], sys.argv[2], sys.argv[3]
+js = open(src, encoding='utf-8').read()
+old = '"qemu-system-x86_64.wasm"'
+n = js.count(old)
+if n == 0:
+    raise SystemExit('pack-site: out.js never names %s - has emscripten changed how it finds the engine?' % old)
+js = js.replace(old, '"%s"' % name)
+if 'qemu-system-x86_64.wasm' in js:
+    raise SystemExit('pack-site: out.js still names qemu-system-x86_64.wasm after the rename')
+open(dst, 'w', encoding='utf-8').write(js)
+print('    ok  out.js fetches %s (%d references renamed)' % (name, n))
+PYEOF
 cp "$WORKER" "$OUT/qemu-system-x86_64.worker.js"
 
 # --- the file-packager bundles -------------------------------------------
@@ -141,11 +199,15 @@ mkdir -p "$STAGE/out"
 # change - #70 grew it from 1 to 4 GiB - and it was once served as
 # `immutable, max-age=1y` under a fixed name, which no header change can
 # reach. Only a new name gets a returning browser off the old disk.
+# So do the ROMs, for the same reasons: vm.state carries the ROM regions and
+# refuses ones of another size, they change only when the fork pin moves -
+# which is a new vm.state, so a new tag - and they too were once immutable
+# under a fixed name.
 SUF=""
 [ -n "$R2TAG" ] && SUF=".$R2TAG"
 # data file : loader js : source under in/ : guest path module.js expects
 PACKAGES="
-load-rom.data:load-rom.js:rom:/pack-rom
+load-rom${SUF}.data:load-rom.js:rom:/pack-rom
 load-kernel.data:load-kernel.js:vmlinuz:/pack-kernel/vmlinuz
 load-rootfsB${SUF}.data:load-rootfsB.js:rootfs.ext4:/pack-rootfs/rootfs.ext4
 load-state${SUF}.data:load-state.js:vm.state:/pack-state/vm.state
@@ -202,15 +264,16 @@ if missing:
 print('    ok  every path web/module-restore.js names is packaged')
 PYEOF
 
-# The ROMs live inside load-rom.data now; the loose copies were only staging.
+# The ROMs live inside the load-rom bundle now; the loose copies were only staging.
 rm -rf "$OUT/rom"
 
 # Whatever the bundles ended up called, the page and the Worker must name
 # exactly those. A page pointing at a key the Worker does not serve is a 404
 # at boot; a Worker serving a key the page never asks for is dead weight.
-python3 - "$OUT" "$ROOT/web/fork/index.html" "$ROOT/deploy/worker.js" <<'PYEOF'
+python3 - "$OUT" "$ROOT/web/fork/index.html" "$ROOT/deploy/worker.js" "$WASM_NAME" <<'PYEOF'
 import pathlib, re, sys
 out, page, worker = (pathlib.Path(p) for p in sys.argv[1:4])
+engine = sys.argv[4]
 produced = sorted(p.name for p in out.glob('load-*.data'))
 page_src = page.read_text()
 worker_src = worker.read_text()
@@ -231,6 +294,16 @@ for d in big:
 for m in re.findall(r"'/(load-[^']+\.data)'", worker_src):
     if m not in produced:
         bad.append('deploy/worker.js serves /%s, which this build did not produce' % m)
+# The engine's name is its hash, so a new engine is a new name, and the Worker
+# must be told it: that is the step that lets the old one stay cached safely.
+engines = re.findall(r"'/(qemu-system-x86_64[^'/]*\.wasm)'", worker_src)
+if engine not in engines:
+    bad.append('this engine is %s, which deploy/worker.js does not serve - point its '
+               'R2_FILES engine entry at \'/%s\' (path and key), and the docs with it '
+               '(node --test web/test/deploy-docs.test.mjs lists them)' % (engine, engine))
+for e in engines:
+    if e != engine:
+        bad.append('deploy/worker.js serves /%s, which this build did not produce' % e)
 if bad:
     raise SystemExit('pack-site: page/Worker do not match the bundles:\n  - ' + '\n  - '.join(bad))
 print('    ok  the page and worker.js name exactly the bundles produced')

@@ -11,25 +11,45 @@ x86_64 machine or an emulator:
 
 | Workflow | Artifact | What is in it |
 |---|---|---|
-| `build.yml` | `qemu-engine` | `out.js`, the `.wasm`, the pthread worker, `vendor/` (xterm + xterm-pty, the versions the engine linked against) and `pc-bios/` |
-| `snapshot.yml` | `snapshot-set` | `vmlinuz`, `rootfs-booted.ext4`, `vdb.qcow2`, `vm.state` |
+| `build.yml` | `qemu-engine` | `out.js`, the `.wasm`, the pthread worker, `vendor/` (xterm + xterm-pty, the versions the engine linked against), `pc-bios/` and `FORK_REVISION` |
+| `snapshot.yml` | `snapshot-set` | `vmlinuz`, `rootfs-booted.ext4`, `vdb.qcow2`, `vm.state` and `FORK_REVISION` |
 
-`snapshot.yml` runs automatically on a push to `main` touching `image/**` or
-`snapshot/**`, and builds native QEMU **from the ktock fork tree** to do the
-capture — a distro-QEMU stream makes the fork engine hang silently at
-`-incoming`, so that detail is not optional.
+`snapshot.yml` runs automatically on a push to `main` touching `image/**`,
+`snapshot/**` or the fork pin, and builds native QEMU **from the ktock fork
+tree** to do the capture — a distro-QEMU stream makes the fork engine hang
+silently at `-incoming`, so that detail is not optional. It has to be the
+**same commit** of that tree as the engine, too: both workflows fetch the one
+pinned in `patches/fork/REVISION` (`scripts/fetch-fork.sh`), each artifact
+records it in `FORK_REVISION`, and `pack-site.sh` refuses to pair an engine and
+a snapshot that name different commits, or an artifact that names none (one
+built before the pin).
 
-Then assemble locally:
+Then download the two artifacts **by run id**, from the latest successful runs
+on `main`, into fresh directories, and assemble:
 
 ```sh
-gh run download -n qemu-engine  -D /tmp/engine
-gh run download -n snapshot-set -D /tmp/guest
+ENGINE_RUN=$(gh run list -w build.yml -b main -e push -s success -L 1 --json databaseId -q '.[0].databaseId')
+GUEST_RUN=$(gh run list -w snapshot.yml -b main -s success -L 1 --json databaseId -q '.[0].databaseId')
+rm -rf /tmp/engine /tmp/guest
+gh run download "$ENGINE_RUN" -n qemu-engine  -D /tmp/engine
+gh run download "$GUEST_RUN"  -n snapshot-set -D /tmp/guest
 make site ENGINE=/tmp/engine GUEST=/tmp/guest R2TAG=v3
 ```
 
+Without a run id, `gh run download -n` takes the newest artifact of that name
+from **any** run, and `build.yml` also runs on pull requests, so the engine
+could come from an unmerged branch. A reused directory is refused, not merged:
+`pack-site.sh` stops when a file it needs is there twice, because nothing then
+says which copy belongs with which. `snapshot.yml` runs only when the image,
+the snapshot scripts or the fork pin change, so its latest run can be much
+older than the engine's; that is fine as long as both name the same
+`FORK_REVISION`, and if they do not, `gh workflow run snapshot.yml` captures a
+new one.
+
 `R2TAG` must be the tag `deploy/worker.js` serves — the `.v3` in its
 `R2_FILES` keys. The snapshot-set bundles are named by it
-(`load-rootfsB.v3.data`, `load-state.v3.data`, `load-lab.v3.data`), and
+(`load-rootfsB.v3.data`, `load-state.v3.data`, `load-lab.v3.data`,
+`load-rom.v3.data`), and
 `pack-site.sh` refuses a build whose names are not exactly what the Worker
 serves, so any other tag, or none, cannot be deployed. **Updating later**
 says when it moves.
@@ -55,7 +75,7 @@ produces a VM that will not resume. `pack-site.sh` takes the right one.
 |------|------|---------------|
 | `load-rootfsB.v3.data` (the Ubuntu disk) | ~1.0 GB | **R2** |
 | `load-state.v3.data` (the saved running state) | ~300 MiB | **R2** |
-| `qemu-system-x86_64.wasm` (the engine) | ~39 MiB | **R2** |
+| `qemu-system-x86_64.d8537ec6ccf0354a.wasm` (the engine, named by its hash) | ~39 MiB | **R2** |
 | the page, JS, `load-kernel.data` (17 MiB), ROM, lab disk, `vendor/` | each < 25 MiB | **Static Assets** |
 
 Sizes drift with the guest image — the rootfs grew from ~1038 MiB when man pages
@@ -72,7 +92,7 @@ sidesteps all cross-origin (CORS/CORP) complexity.
 ```
 browser ──▶ https://lab.bashtion.dev
              ├─ /  /*.js  /vendor/*  /load-kernel.data …        ─▶ Static Assets (public/)
-             └─ /qemu-system-x86_64.wasm                         ─▶ worker.js ─▶ private R2
+             └─ /qemu-system-x86_64.d8537ec6ccf0354a.wasm        ─▶ worker.js ─▶ private R2
                 /load-rootfsB.v3.data  /load-state.v3.data           (bucket binding)
 ```
 
@@ -94,7 +114,7 @@ Yes, comfortably.
 
 ## Caching
 
-`worker.js` stores each full GET of `qemu-system-x86_64.wasm` and `load-state.v3.data`
+`worker.js` stores each full GET of `qemu-system-x86_64.d8537ec6ccf0354a.wasm` and `load-state.v3.data`
 in Cloudflare's edge cache (they are immutable), so a second visitor in the same
 region gets them straight from cache — no Worker invocation, no R2 read. The
 ~1038 MiB `load-rootfsB.v3.data` is intentionally **not** cached: it is above the
@@ -111,7 +131,7 @@ the Workers Cache API emits. Verify with a full GET, run twice (expect `MISS`
 then `HIT`):
 
 ```sh
-curl -s -o /dev/null -D - https://lab.bashtion.dev/qemu-system-x86_64.wasm \
+curl -s -o /dev/null -D - https://lab.bashtion.dev/qemu-system-x86_64.d8537ec6ccf0354a.wasm \
   | grep -i x-bashtion-cache
 ```
 
@@ -189,8 +209,8 @@ private.
 The engine and the saved-state file are under wrangler's single-upload cap:
 
 ```sh
-npx wrangler r2 object put bashtion-assets/qemu-system-x86_64.wasm \
-    --file out/site/qemu-system-x86_64.wasm --remote
+npx wrangler r2 object put bashtion-assets/qemu-system-x86_64.d8537ec6ccf0354a.wasm \
+    --file out/site/qemu-system-x86_64.d8537ec6ccf0354a.wasm --remote
 
 npx wrangler r2 object put bashtion-assets/load-state.v3.data \
     --file out/site/load-state.v3.data --remote
@@ -291,7 +311,7 @@ curl -sI https://lab.bashtion.dev/ | \
 
 # The big files come from R2 through the Worker, with Range support:
 curl -sI -H 'Range: bytes=0-15' \
-  https://lab.bashtion.dev/qemu-system-x86_64.wasm | \
+  https://lab.bashtion.dev/qemu-system-x86_64.d8537ec6ccf0354a.wasm | \
   grep -iE 'HTTP|content-range|content-type'
 ```
 
@@ -330,16 +350,51 @@ made it into the deploy.
   `web/test/deploy-docs.test.mjs` fails until it does. If the rate-limit rule
   is set up in the dashboard, edit its paths at release too: it matches exact
   paths, so it silently stops applying once the Worker serves new ones.
+  The tag renames the ROMs too (`load-rom.v3.data`): `vm.state` carries the
+  ROM regions and will not restore against ones of another size, and they
+  change only when the fork pin moves, which is a new `vm.state` anyway.
   The tag renames the small lab disk too (`load-lab.v3.data`): it is a static
   asset, not an R2 object, but it belongs to the same matched set, and a fixed
   name is how the 1 GiB disk would outlive the move to 4 GiB in browsers that
   cached it as immutable. Nothing to upload for it - `load-lab.js` names it.
 
-  The engine `.wasm` only changes when the engine does, and the fork build is
-  reproducible, so it usually needs no re-upload at all. R2 objects are content-addressed by
-  you here, so overwriting the same key is fine; visitors get the new bytes
-  (the immutable cache is keyed on the URL — if you need instant invalidation,
-  version the key and update `worker.js`).
+- **Rebuilt the engine: it gets a new name, and `worker.js` has to learn it.**
+  The engine is cached exactly like the bundles above - edge cache first, then
+  `immutable` for a year in browsers - while `out.js`, the emscripten loader
+  that must come from the same build, is a static asset that revalidates. So
+  an engine overwritten under a fixed name reaches nobody who has the old one,
+  and they run the new loader against the old engine. Instead `pack-site.sh`
+  names the engine by its content, `qemu-system-x86_64.<first 16 hex of its
+  sha256>.wasm`, rewrites `out.js` to fetch exactly that, and refuses a build
+  whose engine is not the one `R2_FILES` serves. The build is reproducible from
+  a fixed fork commit (`patches/fork/REVISION`), flags and emsdk, so an
+  unchanged engine keeps its name and needs no upload at all.
+
+  When the engine does change, `make site` stops and prints the new name. Put
+  it in `worker.js`'s `R2_FILES` (path and key) and in this guide - `node
+  --test web/test/deploy-docs.test.mjs` lists each place it names the old one -
+  commit, and build again. Upload the new object, `wrangler deploy` (the new
+  `out.js` and the Worker switch together), then delete the old object once
+  traffic has moved. Moving the fork pin also changes `vm.state`, so it is a
+  new snapshot set and a new R2 tag as well.
+
+  **Deploy an engine change when nobody is using the lab.** A tab that is
+  already open keeps the loader and engine it started with, except in one
+  place: emscripten starts four threads up front and more only when the VM
+  needs more at once than it has before, and each new thread loads `out.js`
+  again by its fixed name. After the deploy that is the new `out.js`, run
+  against the old engine the tab hands it, and the VM can fail mid-session,
+  losing whatever the student has not downloaded. (A page loaded in the
+  seconds before the switch can also find its old engine no longer served; a
+  reload fixes that.) If an engine change has to go out during a session,
+  have students download their work and reload first.
+
+  `vendor/` is renamed by neither. It holds xterm and xterm-pty, and xterm-pty
+  is pinned exactly inside the fork tree (the fork's Dockerfile installs
+  0.10.1, and `build.yml` says why it stays there), so it changes only if a
+  pin move changes that version. Browsers that loaded the site before #74 hold
+  `vendor/` as `immutable` for a year, so a pin move that does has to give
+  `vendor/` a new path in `web/fork/index.html` too.
 
 ## Optional add-ons
 
@@ -358,7 +413,7 @@ made it into the deploy.
   paths — click **Edit expression** and paste:
 
   ```
-  http.request.uri.path in {"/qemu-system-x86_64.wasm" "/load-rootfsB.v3.data" "/load-state.v3.data"}
+  http.request.uri.path in {"/qemu-system-x86_64.d8537ec6ccf0354a.wasm" "/load-rootfsB.v3.data" "/load-state.v3.data"}
   ```
 
   Set **the same characteristics = IP** (the only per-IP option on free), then
@@ -412,8 +467,14 @@ made it into the deploy.
   running it.
 - **Big file 404s at runtime** → the R2 key does not match the request path.
   Keys must be exactly the ones `worker.js`'s `R2_FILES` serves:
-  `qemu-system-x86_64.wasm`, `load-rootfsB.v3.data`, `load-state.v3.data`.
+  `qemu-system-x86_64.d8537ec6ccf0354a.wasm`, `load-rootfsB.v3.data`, `load-state.v3.data`.
 - **`pack-site: page/Worker do not match the bundles`** → the build's tag is
   not the one `worker.js` serves (or there was none). Re-run `make site` with
   `R2TAG` set to the tag in `R2_FILES`; do not add unversioned or old-tag keys
-  to `R2_FILES`, whatever the message suggests.
+  to `R2_FILES`, whatever the message suggests. If it is the engine it names,
+  the engine changed: see **Updating later**.
+- **`pack-site: the engine and the snapshot come from different fork trees`**
+  (or an artifact **records no `FORK_REVISION`**) → the two downloads were
+  built from different `patches/fork/REVISION` commits, or one from before the
+  pin. Download the pair from runs after the last change to the pin; if
+  `snapshot.yml` has not run since, run it (`gh workflow run snapshot.yml`).

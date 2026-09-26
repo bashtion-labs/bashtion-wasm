@@ -569,10 +569,12 @@ RUN set -e; head=$(head -1 /rootfs/usr/local/lib/bashtion/baseline.tsv); \
 # Size for content PLUS a stated free-space target, and drop the root reserve
 # to 1%: this is a single-user disposable VM, and 5% held back ~40 MB for a
 # fsck that has nowhere to run. The ceiling is real - the whole rootfs image is
-# resident in the wasm heap (-sTOTAL_MEMORY=2300MB, shared with 512 MB of guest
-# RAM and the 128 MB TB cache) - so FREE_MB is a deliberate balance. /dev/vdb
-# (VDB_GIB, qcow2, grows on write) is no way round that ceiling: what the
-# guest writes there lands in the same heap (see the practice disk below).
+# resident in the tab's memory: emscripten's in-memory filesystem keeps each
+# disk image as a JS array beside the fixed wasm heap (-sTOTAL_MEMORY=2300MB,
+# which holds the 512 MB of guest RAM, the 128 MB TB cache and QEMU) - so
+# FREE_MB is a deliberate balance. /dev/vdb (VDB_GIB, qcow2, grows on write)
+# is no way round that ceiling: what the guest writes there grows its array in
+# the same tab (see the practice disk below).
 ARG FREE_MB=192
 RUN set -e; content_mb=$(( $(du -s --block-size=1024 /rootfs | cut -f1) / 1024 )); \
     size_mb=$(( (content_mb + ${FREE_MB}) * 108 / 100 )); \
@@ -602,12 +604,14 @@ RUN debugfs -R 'ea_list /usr/bin/ping' /out/rootfs.ext4 2>/dev/null | \
       grep -q security.capability || { echo "FATAL: cap xattr lost in ext4"; exit 1; }
 # practice disk: qcow2, empty, unpartitioned - partitioning it is the
 # exercise. qcow2 so the browser holds ~200 KB, growing only as written,
-# instead of all VDB_GIB of it as raw zeros resident in the wasm heap. Empty,
+# instead of all VDB_GIB of it as raw zeros in the tab's memory. Empty,
 # it costs the same at 4 GiB as it did at 1 GiB (the L1 table grows by 48
 # bytes), and 4 GiB holds the handful of 1 GiB loop files and volume groups
 # that LVM tutorials build. The nominal size is not the whole story in a
-# browser: whatever the guest actually WRITES to the disk lands in the wasm
-# heap, so heap headroom, not this number, bounds how much can be filled.
+# browser: whatever the guest actually WRITES to the disk grows its in-memory
+# array (MEMFS regrows a file 12.5% at a time, copying it whole), so the tab's
+# free memory, not this number, bounds how much can be filled. Raising
+# -sTOTAL_MEMORY would not help: that is the wasm heap, not where files live.
 RUN set -e; apt-get install -y --no-install-recommends qemu-utils >/dev/null; \
     qemu-img create -f qcow2 /out/vdb.qcow2 ${VDB_GIB}G; ls -la /out/vdb.qcow2; \
     vsize=$(qemu-img info --output=json /out/vdb.qcow2 | \

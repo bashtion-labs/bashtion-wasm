@@ -32,8 +32,8 @@
 # the engine it was built with (qemu-system-x86_64.<hash>.wasm, see
 # pack-site.sh), so it has to revalidate for a new engine to reach anyone; the
 # engine itself is immutable in worker.js, under a name that cannot be reused.
-# vendor/ (xterm-pty must be the version the engine linked) and load-rom.data
-# (the fork tree's ROMs, which vm.state carries its own copy of and checks the
-# size of) are that build's too, under fixed names, and are small.
+# vendor/ (xterm-pty must be the version the engine linked) is that build's
+# too, under fixed names, and small. The ROMs are renamed with the snapshot
+# set (load-rom.v3.data), like the lab disk, and revalidate like it.
 /load-kernel.data
   Cache-Control: public, max-age=31536000, immutable

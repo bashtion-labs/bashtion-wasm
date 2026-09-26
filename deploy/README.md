@@ -22,21 +22,34 @@ silently at `-incoming`, so that detail is not optional. It has to be the
 pinned in `patches/fork/REVISION` (`scripts/fetch-fork.sh`), each artifact
 records it in `FORK_REVISION`, and `pack-site.sh` refuses to pair an engine and
 a snapshot that name different commits, or an artifact that names none (one
-built before the pin). The two workflows run on different pushes, so always
-check that the pair you download are both from after the last change to the
-pin.
+built before the pin).
 
-Then assemble locally:
+Then download the two artifacts **by run id**, from the latest successful runs
+on `main`, into fresh directories, and assemble:
 
 ```sh
-gh run download -n qemu-engine  -D /tmp/engine
-gh run download -n snapshot-set -D /tmp/guest
+ENGINE_RUN=$(gh run list -w build.yml -b main -e push -s success -L 1 --json databaseId -q '.[0].databaseId')
+GUEST_RUN=$(gh run list -w snapshot.yml -b main -s success -L 1 --json databaseId -q '.[0].databaseId')
+rm -rf /tmp/engine /tmp/guest
+gh run download "$ENGINE_RUN" -n qemu-engine  -D /tmp/engine
+gh run download "$GUEST_RUN"  -n snapshot-set -D /tmp/guest
 make site ENGINE=/tmp/engine GUEST=/tmp/guest R2TAG=v3
 ```
 
+Without a run id, `gh run download -n` takes the newest artifact of that name
+from **any** run, and `build.yml` also runs on pull requests, so the engine
+could come from an unmerged branch. A reused directory is refused, not merged:
+`pack-site.sh` stops when a file it needs is there twice, because nothing then
+says which copy belongs with which. `snapshot.yml` runs only when the image,
+the snapshot scripts or the fork pin change, so its latest run can be much
+older than the engine's; that is fine as long as both name the same
+`FORK_REVISION`, and if they do not, `gh workflow run snapshot.yml` captures a
+new one.
+
 `R2TAG` must be the tag `deploy/worker.js` serves — the `.v3` in its
 `R2_FILES` keys. The snapshot-set bundles are named by it
-(`load-rootfsB.v3.data`, `load-state.v3.data`, `load-lab.v3.data`), and
+(`load-rootfsB.v3.data`, `load-state.v3.data`, `load-lab.v3.data`,
+`load-rom.v3.data`), and
 `pack-site.sh` refuses a build whose names are not exactly what the Worker
 serves, so any other tag, or none, cannot be deployed. **Updating later**
 says when it moves.
@@ -337,6 +350,9 @@ made it into the deploy.
   `web/test/deploy-docs.test.mjs` fails until it does. If the rate-limit rule
   is set up in the dashboard, edit its paths at release too: it matches exact
   paths, so it silently stops applying once the Worker serves new ones.
+  The tag renames the ROMs too (`load-rom.v3.data`): `vm.state` carries the
+  ROM regions and will not restore against ones of another size, and they
+  change only when the fork pin moves, which is a new `vm.state` anyway.
   The tag renames the small lab disk too (`load-lab.v3.data`): it is a static
   asset, not an R2 object, but it belongs to the same matched set, and a fixed
   name is how the 1 GiB disk would outlive the move to 4 GiB in browsers that
@@ -361,6 +377,13 @@ made it into the deploy.
   `out.js` and the Worker switch together), then delete the old object once
   traffic has moved. Moving the fork pin also changes `vm.state`, so it is a
   new snapshot set and a new R2 tag as well.
+
+  `vendor/` is renamed by neither. It holds xterm and xterm-pty, and xterm-pty
+  is pinned exactly inside the fork tree (the fork's Dockerfile installs
+  0.10.1, and `build.yml` says why it stays there), so it changes only if a
+  pin move changes that version. Browsers that loaded the site before #74 hold
+  `vendor/` as `immutable` for a year, so a pin move that does has to give
+  `vendor/` a new path in `web/fork/index.html` too.
 
 ## Optional add-ons
 

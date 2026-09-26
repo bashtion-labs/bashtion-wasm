@@ -85,13 +85,14 @@ pack:
 	cp $(OUT)/image/vmlinuz $(OUT)/image/rootfs.ext4 $(OUT)/image/vdb.qcow2 $(HTDOCS)/assets/
 	cp web/index.html web/module.js $(HTDOCS)/
 
-## Assemble a deployable htdocs from the two CI artifacts. Download them with
-##   gh run download -n qemu-engine -D /tmp/engine
-##   gh run download -n snapshot-set -D /tmp/guest
-## then: make site ENGINE=/tmp/engine GUEST=/tmp/guest R2TAG=v3
-## R2TAG versions the snapshot-set bundles (the two on R2, and the lab disk);
-## bump it whenever their bytes change, or caches will keep serving the old
-## ones (see deploy/README.md). It must be the tag deploy/worker.js serves, and
+## Assemble a deployable htdocs from the two CI artifacts. Download them by run
+## id, from successful runs on main, into fresh directories (deploy/README.md,
+## "Getting the files", has the commands); a bare `gh run download -n` takes
+## the newest artifact of that name from any run, pull requests included.
+## Then: make site ENGINE=/tmp/engine GUEST=/tmp/guest R2TAG=v3
+## R2TAG versions the snapshot-set bundles (the two on R2, the lab disk and the
+## ROMs); bump it whenever their bytes change, or caches will keep serving the
+## old ones (see deploy/README.md). It must be the tag deploy/worker.js serves, and
 ## that is bumped with the change itself - never re-upload under a live tag.
 ## R2TAG is required: worker.js serves only versioned keys, so an untagged build
 ## can never be deployed, and pack-site.sh would only say so after packaging.

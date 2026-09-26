@@ -75,13 +75,16 @@ cp "$HERE/_headers"             "$PUB/_headers"
 for f in index.html boot.js serialfs.js serialtap.js termfit.js bootscreen.js module.js \
          out.js qemu-system-x86_64.worker.js \
          load-rom.js load-kernel.js load-rootfsB.js load-state.js load-lab.js \
-         load-kernel.data load-rom.data _headers; do
+         load-kernel.data _headers; do
   [ -e "$PUB/$f" ] || die "assembled public/ is missing $f"
 done
-# The lab disk is versioned with the snapshot set (load-lab.v3.data), so ask its
-# loader which name it fetches rather than assuming one.
-lab=$(sed -n "s/.*REMOTE_PACKAGE_BASE = '\([^']*\)'.*/\1/p" "$PUB/load-lab.js")
-[ -n "$lab" ] && [ -e "$PUB/$lab" ] || die "assembled public/ is missing the lab disk (${lab:-?})"
+# The lab disk and the ROMs are versioned with the snapshot set
+# (load-lab.v3.data, load-rom.v3.data), so ask each loader which name it
+# fetches rather than assuming one.
+for l in lab rom; do
+  data=$(sed -n "s/.*REMOTE_PACKAGE_BASE = '\([^']*\)'.*/\1/p" "$PUB/load-$l.js")
+  [ -n "$data" ] && [ -e "$PUB/$data" ] || die "assembled public/ is missing the $l bundle (${data:-?})"
+done
 # Every <script src> the page names must exist, or the deploy 404s at boot.
 while IFS= read -r ref; do
   [ -e "$PUB/$ref" ] || die "index.html references missing file: $ref"

@@ -486,6 +486,7 @@ def cmd_unpack():
     if listed.returncode != 0:
         sys.exit('bashtion-unpack: not a readable archive')
     members = set()
+    marked = False                # carries the format-2 marker
     sessions = []                 # session.json, as the listing spells it
     roots = set()                 # every tree it writes under, per spelling
     home = set()                  # ...and the home tree alone
@@ -505,6 +506,7 @@ def cmd_unpack():
                 or os.path.normpath(key) != key):
             sys.exit('bashtion-unpack: refusing path %r' % name)
         if key == MARKER_REL:
+            marked = True
             continue
         if not (key + '/').startswith(ALLOWED):
             sys.exit('bashtion-unpack: refusing path outside the session: %r' % name)
@@ -527,7 +529,15 @@ def cmd_unpack():
     # fixes, silently - and replays removals derived from a different tree.
     # So it applies only when both sides name the same build; otherwise the
     # home directory, which means the same thing on any build, is all that
-    # comes back. That includes every archive saved before builds were named.
+    # comes back. That includes every format-1 archive, saved before builds were
+    # named. (Older ones never get here: their members are relative to the home
+    # directory, and the name check above refuses them.)
+    # Only a format-2 pack writes the marker, and it always writes session.json
+    # beside it. A marked archive without one is damaged, or from a format that
+    # keeps its metadata elsewhere - not a legacy archive to restore home-only.
+    if marked and not sessions:
+        sys.exit('bashtion-unpack: this archive is marked format 2 or later but '
+                 'carries no session.json; nothing was restored')
     meta = read_meta(data, sessions)
     theirs = meta.get('build') if meta else None
     theirs = theirs if valid_id(theirs) else None

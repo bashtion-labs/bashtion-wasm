@@ -123,13 +123,18 @@ contents, owner, extended attributes and hard links - and every archive records 
 extracting anything, then:
 
 - **same build** - restores everything, as above;
-- **a different build, or no build recorded** (every archive saved before format 2) - restores
+- **a different build, or no build recorded** (every format-1 archive) - restores
   `/home/user` only, `~/share` included, and skips the system files and the deletions, which
   would otherwise silently revert whatever the newer image changed in the same files. It
   prints a warning naming both builds, and the page reports "Only your home folder was
   restored" rather than a plain success;
 - **a format newer than it understands, or a `session.json` it cannot read** (not valid JSON,
-  not a regular file, present twice) - refuses, having written nothing.
+  not a regular file, present twice, or missing from an archive that carries the format-2
+  marker below) - refuses, having written nothing.
+
+Archives from before format 1 - the original home-only download, `tar -C /home/user .`, whose
+members are relative to the home directory - are refused by the name check, as they have been
+since format 1 rooted the archive at `/`.
 
 So after the guest image is rebuilt and redeployed, work saved before the update comes back
 home-only, and system changes have to be made again.

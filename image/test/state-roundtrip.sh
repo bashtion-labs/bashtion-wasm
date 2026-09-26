@@ -311,6 +311,21 @@ with tarfile.open('/tmp/v2.tgz') as i, tarfile.open('/tmp/garbled.tgz', 'w:gz') 
         o.addfile(m, f)
 PY
 refused "an unreadable session.json" /tmp/garbled.tgz
+# The marker says format 2 or later, and a format-2 pack always writes
+# session.json beside it: without one the archive is damaged, not legacy.
+python3 - <<'PY'
+import tarfile
+with tarfile.open('/tmp/v2.tgz') as i, tarfile.open('/tmp/nometa.tgz', 'w:gz') as o:
+    for m in i:
+        if m.name != 'var/lib/bashtion/session.json':
+            o.addfile(m, i.extractfile(m) if m.isfile() else None)
+PY
+refused "a marked archive with no session.json" /tmp/nometa.tgz
+# The original home-only download: members relative to the home directory.
+# Those are refused by the name check, as they have been since format 1.
+mkdir -p /tmp/prefmt1 && echo home-legacy > /tmp/prefmt1/legacy.txt
+tar czf /tmp/prefmt1.tgz -C /tmp/prefmt1 .
+refused "a pre-format-1 home-only archive" /tmp/prefmt1.tgz "refusing path outside the session"
 
 # Archives spelled so that a name check which only strips leading dots and
 # slashes, or reads session.json recursively, would let them through.

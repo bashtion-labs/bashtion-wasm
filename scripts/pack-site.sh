@@ -15,10 +15,10 @@
 #               vdb.qcow2, vm.state and FORK_REVISION
 #     --out     where to assemble (default out/site)
 #     --r2-tag  version suffix for the snapshot-set bundles - the two on R2,
-#               the lab disk and the ROMs - e.g. --r2-tag v3 gives
-#               load-rootfsB.v3.data, load-state.v3.data, load-lab.v3.data and
-#               load-rom.v3.data. Must be the tag deploy/worker.js serves (see
-#               there for when to bump it).
+#               the kernel, the lab disk and the ROMs - e.g. --r2-tag v3 gives
+#               load-rootfsB.v3.data, load-state.v3.data, load-kernel.v3.data,
+#               load-lab.v3.data and load-rom.v3.data. Must be the tag
+#               deploy/worker.js serves (see there for when to bump it).
 #
 # Files are located by NAME anywhere under the given directory, so it does not
 # matter how download-artifact happened to nest them - but each name must be
@@ -76,7 +76,7 @@ while [ $# -gt 0 ]; do
     --guest)  GUEST="$2";  shift 2 ;;
     --out)    OUT="$2";    shift 2 ;;
     --r2-tag) R2TAG="$2";  shift 2 ;;
-    -h|--help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -203,12 +203,17 @@ mkdir -p "$STAGE/out"
 # refuses ones of another size, they change only when the fork pin moves -
 # which is a new vm.state, so a new tag - and they too were once immutable
 # under a fixed name.
+# And so does the kernel, which comes out of the image build with the rest of
+# the set and was immutable under a fixed name as well. A stale one does not
+# show when the page starts - the running kernel is in vm.state - but QEMU
+# cold-boots the file on a guest reboot, and the loader hands it whatever the
+# browser has cached, cut to the length it expects, without complaint.
 SUF=""
 [ -n "$R2TAG" ] && SUF=".$R2TAG"
 # data file : loader js : source under in/ : guest path module.js expects
 PACKAGES="
 load-rom${SUF}.data:load-rom.js:rom:/pack-rom
-load-kernel.data:load-kernel.js:vmlinuz:/pack-kernel/vmlinuz
+load-kernel${SUF}.data:load-kernel.js:vmlinuz:/pack-kernel/vmlinuz
 load-rootfsB${SUF}.data:load-rootfsB.js:rootfs.ext4:/pack-rootfs/rootfs.ext4
 load-state${SUF}.data:load-state.js:vm.state:/pack-state/vm.state
 load-lab${SUF}.data:load-lab.js:vdb.qcow2:/pack-lab/vdb.qcow2

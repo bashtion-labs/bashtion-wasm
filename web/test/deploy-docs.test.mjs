@@ -72,13 +72,13 @@ test('every snapshot-set bundle a document names carries the served tag', () => 
   const [tag] = tags;
   const docs = markdown();
   for (const doc of ['README.md', 'deploy/README.md']) assert.ok(docs.includes(doc), `${doc} not scanned`);
-  const bundles = (text) => [...text.matchAll(/load-(rootfsB|state|lab|rom)(?:\.([^.\s"'`/]+))?\.data/g)];
+  const bundles = (text) => [...text.matchAll(/load-(rootfsB|state|kernel|lab|rom)(?:\.([^.\s"'`/]+))?\.data/g)];
   assert.ok(bundles(guide).length > 0, 'deploy/README.md names no snapshot-set bundle');
   for (const doc of docs) {
     for (const [name, bundle, t] of bundles(read(doc))) {
       assert.equal(t, tag, `${doc} names ${name}; worker.js serves the ${tag} set`);
-      // the lab disk and the ROMs are static assets; the other two are R2 keys the Worker must know
-      if (bundle !== 'lab' && bundle !== 'rom') assert.ok(served.has(name), `worker.js does not serve ${name}`);
+      // the kernel, the lab disk and the ROMs are static assets; the other two are R2 keys the Worker must know
+      if (!['kernel', 'lab', 'rom'].includes(bundle)) assert.ok(served.has(name), `worker.js does not serve ${name}`);
     }
   }
 });

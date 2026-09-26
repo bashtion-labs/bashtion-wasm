@@ -48,8 +48,8 @@ new one.
 
 `R2TAG` must be the tag `deploy/worker.js` serves — the `.v3` in its
 `R2_FILES` keys. The snapshot-set bundles are named by it
-(`load-rootfsB.v3.data`, `load-state.v3.data`, `load-lab.v3.data`,
-`load-rom.v3.data`), and
+(`load-rootfsB.v3.data`, `load-state.v3.data`, `load-kernel.v3.data`,
+`load-lab.v3.data`, `load-rom.v3.data`), and
 `pack-site.sh` refuses a build whose names are not exactly what the Worker
 serves, so any other tag, or none, cannot be deployed. **Updating later**
 says when it moves.
@@ -76,7 +76,7 @@ produces a VM that will not resume. `pack-site.sh` takes the right one.
 | `load-rootfsB.v3.data` (the Ubuntu disk) | ~1.0 GB | **R2** |
 | `load-state.v3.data` (the saved running state) | ~300 MiB | **R2** |
 | `qemu-system-x86_64.d8537ec6ccf0354a.wasm` (the engine, named by its hash) | ~39 MiB | **R2** |
-| the page, JS, `load-kernel.data` (17 MiB), ROM, lab disk, `vendor/` | each < 25 MiB | **Static Assets** |
+| the page, JS, `load-kernel.v3.data` (17 MiB), ROM, lab disk, `vendor/` | each < 25 MiB | **Static Assets** |
 
 Sizes drift with the guest image — the rootfs grew from ~1038 MiB when man pages
 and a real free-space target were added. `pack-site.sh` prints the current
@@ -91,7 +91,7 @@ sidesteps all cross-origin (CORS/CORP) complexity.
 
 ```
 browser ──▶ https://lab.bashtion.dev
-             ├─ /  /*.js  /vendor/*  /load-kernel.data …        ─▶ Static Assets (public/)
+             ├─ /  /*.js  /vendor/*  /load-kernel.v3.data …      ─▶ Static Assets (public/)
              └─ /qemu-system-x86_64.d8537ec6ccf0354a.wasm        ─▶ worker.js ─▶ private R2
                 /load-rootfsB.v3.data  /load-state.v3.data           (bucket binding)
 ```
@@ -353,6 +353,11 @@ made it into the deploy.
   The tag renames the ROMs too (`load-rom.v3.data`): `vm.state` carries the
   ROM regions and will not restore against ones of another size, and they
   change only when the fork pin moves, which is a new `vm.state` anyway.
+  And the kernel (`load-kernel.v3.data`). It changes only when the image's
+  `ARG SNAPSHOT` date moves and Ubuntu's kernel moved with it. A stale kernel
+  does not show when the page starts, because the running kernel is inside
+  `vm.state`, but a reboot inside the VM cold-boots the file, and the loader
+  takes whatever the browser has cached without checking its length.
   The tag renames the small lab disk too (`load-lab.v3.data`): it is a static
   asset, not an R2 object, but it belongs to the same matched set, and a fixed
   name is how the 1 GiB disk would outlive the move to 4 GiB in browsers that

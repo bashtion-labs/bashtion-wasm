@@ -28,9 +28,12 @@
 # deliberately NOT here: it belongs to the snapshot set, is renamed with it
 # (load-lab.v3.data), and at ~200 KB can afford to revalidate - an immutable
 # rule on a fixed name is what would strand a browser on an old disk.
-/vendor/*
-  Cache-Control: public, max-age=31536000, immutable
+# Nothing that comes from the engine build is here either (#74). out.js names
+# the engine it was built with (qemu-system-x86_64.<hash>.wasm, see
+# pack-site.sh), so it has to revalidate for a new engine to reach anyone; the
+# engine itself is immutable in worker.js, under a name that cannot be reused.
+# vendor/ (xterm-pty must be the version the engine linked) and load-rom.data
+# (the fork tree's ROMs, which vm.state carries its own copy of and checks the
+# size of) are that build's too, under fixed names, and are small.
 /load-kernel.data
-  Cache-Control: public, max-age=31536000, immutable
-/load-rom.data
   Cache-Control: public, max-age=31536000, immutable

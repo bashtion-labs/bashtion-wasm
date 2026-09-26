@@ -34,8 +34,16 @@
 // makes overwriting the live objects the one command that passes. v3 is the
 // set #70 and #72 changed (4 GiB lab disk and file-size cap; archives that name
 // their build); v2 is the set before it.
+//
+// The engine is versioned too, by content: pack-site.sh names it
+// qemu-system-x86_64.<first 16 hex of its sha256>.wasm and rewrites out.js to
+// fetch that. out.js is a static asset that revalidates, so under a fixed name
+// a redeploy paired the new loader with whichever engine the edge or the
+// browser had cached - and emscripten's loader and its .wasm must be one build
+// (#74). The build is reproducible, so the name moves only when the engine
+// does; pack-site.sh refuses a build whose engine is not the one named here.
 const R2_FILES = {
-  '/qemu-system-x86_64.wasm':    { key: 'qemu-system-x86_64.wasm',    type: 'application/wasm' },
+  '/qemu-system-x86_64.d8537ec6ccf0354a.wasm': { key: 'qemu-system-x86_64.d8537ec6ccf0354a.wasm', type: 'application/wasm' },
   '/load-rootfsB.v3.data':       { key: 'load-rootfsB.v3.data',       type: 'application/octet-stream' },
   '/load-state.v3.data':         { key: 'load-state.v3.data',         type: 'application/octet-stream' },
 };

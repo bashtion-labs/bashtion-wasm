@@ -87,6 +87,14 @@ while IFS= read -r ref; do
   [ -e "$PUB/$ref" ] || die "index.html references missing file: $ref"
 done < <(sed -n 's/.*<script[^>]*src="\.\/\([^"]*\)".*/\1/p' "$PUB/index.html")
 grep -q '\-incoming' "$PUB/module.js" || die "public/module.js is not the restore variant"
+# out.js fetches the engine by its content-hashed name (pack-site.sh), and that
+# file goes to R2 - never a bare qemu-system-x86_64.wasm, which the Worker
+# does not serve.
+engine=$(grep -o 'qemu-system-x86_64\.[0-9a-f]\{16\}\.wasm' "$PUB/out.js" | sort -u)
+[ "$(printf '%s\n' "$engine" | grep -c .)" = 1 ] \
+  || die "out.js does not fetch exactly one hash-named engine (${engine:-none}) - build with scripts/pack-site.sh"
+[ -e "$SRC/$engine" ] || die "out.js fetches $engine, which is not in $SRC"
+case " ${BIG[*]} " in *" $engine "*) ;; *) die "$engine is not among the R2-bound files" ;; esac
 for f in "${BIG[@]}"; do
   [ -e "$PUB/$f" ] && die "large file leaked into public/: $f"
 done

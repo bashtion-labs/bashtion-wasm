@@ -41,6 +41,33 @@ test('the deploy guide builds with the tag worker.js serves', () => {
   }
 });
 
+// The engine is named by its hash (#74): pack-site.sh builds
+// qemu-system-x86_64.<16 hex>.wasm and refuses a build whose engine is not the
+// one R2_FILES serves. A new engine is therefore a new name in worker.js, and
+// every document naming the old one - an upload command, the rate-limit rule,
+// a curl check - goes stale with it, as the tag did before this test.
+const engines = [...served].filter((k) => /^qemu-system-x86_64\b/.test(k));
+
+test('worker.js serves one engine, named by its hash', () => {
+  assert.equal(engines.length, 1, `R2_FILES names engines ${engines}`);
+  assert.match(engines[0], /^qemu-system-x86_64\.[0-9a-f]{16}\.wasm$/);
+  const [path, key] = worker.match(/^\s*'\/(qemu-system-x86_64[^']*)':\s*\{\s*key:\s*'([^']+)'/m).slice(1);
+  assert.equal(key, path, 'the engine key is not its path');
+});
+
+test('every engine a document names is the one worker.js serves', () => {
+  const [engine] = engines;
+  let named = 0;
+  for (const doc of markdown()) {
+    // a <placeholder> in place of the hash describes the scheme, not a file
+    for (const [name] of read(doc).matchAll(/qemu-system-x86_64(?:\.(?!<)[^.\s"'`/]+)?\.wasm/g)) {
+      assert.equal(name, engine, `${doc} names ${name}; worker.js serves ${engine}`);
+      named++;
+    }
+  }
+  assert.ok(named > 0, 'no document names the engine');
+});
+
 test('every snapshot-set bundle a document names carries the served tag', () => {
   const [tag] = tags;
   const docs = markdown();

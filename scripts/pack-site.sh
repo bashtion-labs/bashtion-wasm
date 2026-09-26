@@ -10,9 +10,9 @@
 #   usage: scripts/pack-site.sh --engine DIR --guest DIR [--out DIR]
 #
 #     --engine  the `qemu-engine` artifact: out.js, the .wasm, the pthread
-#               worker, vendor/ and pc-bios/
+#               worker, vendor/, pc-bios/ and FORK_REVISION
 #     --guest   the `snapshot-set` artifact: vmlinuz, rootfs-booted.ext4,
-#               vdb.qcow2 and vm.state
+#               vdb.qcow2, vm.state and FORK_REVISION
 #     --out     where to assemble (default out/site)
 #     --r2-tag  version suffix for the snapshot-set bundles - the two on R2 and
 #               the lab disk - e.g. --r2-tag v3 gives load-rootfsB.v3.data,
@@ -33,6 +33,18 @@
 # out/image/rootfs.ext4. A migration stream restores RAM and device state that
 # reference the disk as it was when the snapshot was taken; they are a matched
 # set and mixing them silently produces a VM that will not resume.
+#
+# The engine and the snapshot are a matched pair in the same way: vm.state
+# only restores in an engine built from the fork tree that captured it, and a
+# mismatch is a silent hang at -incoming. Both artifacts record that tree in
+# FORK_REVISION (scripts/fetch-fork.sh), and this refuses two that differ.
+#
+# The engine is published as qemu-system-x86_64.<sha256 prefix>.wasm, and
+# out.js is rewritten to fetch that name. It is served as immutable for a
+# year, from the edge cache and from browsers' own, so a fixed name would pair
+# a redeployed out.js with the old engine - and emscripten's loader and its
+# .wasm must come from the same build. A name taken from the bytes cannot be
+# reused for different ones. deploy/worker.js must serve exactly that name.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -98,6 +110,25 @@ for f in "$OUTJS" "$WASM" "$WORKER" "$KERNEL" "$ROOTFS" "$LAB" "$STATE"; do
   printf '    %10s  %s\n' "$(du -h "$f" | cut -f1)" "${f#$ROOT/}"
 done
 
+# The fork commit each artifact was built from. An artifact without one
+# predates the pin (#73) and could be from any tree: rebuild it.
+fork_rev() {
+  local f rev
+  f="$(find "$1" -type f -name FORK_REVISION -print -quit 2>/dev/null || true)"
+  [ -n "$f" ] || die "the $2 artifact records no FORK_REVISION, so which fork tree built it is unknown - use one built since the fork was pinned (patches/fork/REVISION)"
+  rev="$(tr -d '[:space:]' < "$f")"
+  [[ "$rev" =~ ^[0-9a-f]{40}$ ]] || die "the $2 artifact's FORK_REVISION is not a commit id: '$rev'"
+  printf '%s' "$rev"
+}
+ENGINE_REV="$(fork_rev "$ENGINE" qemu-engine)"
+GUEST_REV="$(fork_rev "$GUEST" snapshot-set)"
+[ "$ENGINE_REV" = "$GUEST_REV" ] || die "the engine and the snapshot come from different fork trees:
+      qemu-engine   $ENGINE_REV
+      snapshot-set  $GUEST_REV
+    vm.state would hang the engine's -incoming. Use artifacts built from one
+    patches/fork/REVISION."
+echo "    fork tree   $ENGINE_REV (engine and snapshot agree)"
+
 rm -rf "$OUT"; mkdir -p "$OUT/vendor" "$OUT/rom"
 for r in bios-256k.bin vgabios-stdvga.bin kvmvapic.bin linuxboot_dma.bin; do
   [ -f "$ROM_DIR/$r" ] || die "missing ROM $r in $ROM_DIR"
@@ -107,8 +138,26 @@ for v in xterm.js xterm.css xterm-pty.js; do
   [ -f "$VENDOR_DIR/$v" ] || die "missing vendor file $v in $VENDOR_DIR"
   cp "$VENDOR_DIR/$v" "$OUT/vendor/"
 done
-cp "$OUTJS" "$OUT/out.js"
-cp "$WASM" "$OUT/qemu-system-x86_64.wasm"
+# The engine, under a name taken from its bytes, and a loader that fetches
+# exactly that name. emscripten writes the .wasm's name into out.js as a string
+# literal (once for Module.locateFile, once for import.meta.url), so rename
+# every occurrence and check that none of the old name is left.
+WASM_NAME="qemu-system-x86_64.$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()[:16])' "$WASM").wasm"
+cp "$WASM" "$OUT/$WASM_NAME"
+python3 - "$OUTJS" "$OUT/out.js" "$WASM_NAME" <<'PYEOF'
+import sys
+src, dst, name = sys.argv[1], sys.argv[2], sys.argv[3]
+js = open(src, encoding='utf-8').read()
+old = '"qemu-system-x86_64.wasm"'
+n = js.count(old)
+if n == 0:
+    raise SystemExit('pack-site: out.js never names %s - has emscripten changed how it finds the engine?' % old)
+js = js.replace(old, '"%s"' % name)
+if 'qemu-system-x86_64.wasm' in js:
+    raise SystemExit('pack-site: out.js still names qemu-system-x86_64.wasm after the rename')
+open(dst, 'w', encoding='utf-8').write(js)
+print('    ok  out.js fetches %s (%d references renamed)' % (name, n))
+PYEOF
 cp "$WORKER" "$OUT/qemu-system-x86_64.worker.js"
 
 # --- the file-packager bundles -------------------------------------------
@@ -208,9 +257,10 @@ rm -rf "$OUT/rom"
 # Whatever the bundles ended up called, the page and the Worker must name
 # exactly those. A page pointing at a key the Worker does not serve is a 404
 # at boot; a Worker serving a key the page never asks for is dead weight.
-python3 - "$OUT" "$ROOT/web/fork/index.html" "$ROOT/deploy/worker.js" <<'PYEOF'
+python3 - "$OUT" "$ROOT/web/fork/index.html" "$ROOT/deploy/worker.js" "$WASM_NAME" <<'PYEOF'
 import pathlib, re, sys
 out, page, worker = (pathlib.Path(p) for p in sys.argv[1:4])
+engine = sys.argv[4]
 produced = sorted(p.name for p in out.glob('load-*.data'))
 page_src = page.read_text()
 worker_src = worker.read_text()
@@ -231,6 +281,16 @@ for d in big:
 for m in re.findall(r"'/(load-[^']+\.data)'", worker_src):
     if m not in produced:
         bad.append('deploy/worker.js serves /%s, which this build did not produce' % m)
+# The engine's name is its hash, so a new engine is a new name, and the Worker
+# must be told it: that is the step that lets the old one stay cached safely.
+engines = re.findall(r"'/(qemu-system-x86_64[^'/]*\.wasm)'", worker_src)
+if engine not in engines:
+    bad.append('this engine is %s, which deploy/worker.js does not serve - point its '
+               'R2_FILES engine entry at \'/%s\' (path and key), and the docs with it '
+               '(node --test web/test/deploy-docs.test.mjs lists them)' % (engine, engine))
+for e in engines:
+    if e != engine:
+        bad.append('deploy/worker.js serves /%s, which this build did not produce' % e)
 if bad:
     raise SystemExit('pack-site: page/Worker do not match the bundles:\n  - ' + '\n  - '.join(bad))
 print('    ok  the page and worker.js name exactly the bundles produced')

@@ -35,12 +35,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Clone fork (shallow, pinned)
+      # The commit in patches/fork/REVISION, never the fork's moving default
+      # branch: snapshot.yml captures with the same tree, and a vm.state from
+      # any other tree hangs this engine's -incoming silently (#73).
+      - name: Fetch the pinned fork commit
         run: |
-          git clone --depth 1 https://github.com/ktock/qemu-wasm.git fork
-          cd fork && git rev-parse HEAD
+          ./scripts/fetch-fork.sh fork
           # configure-era submodules; meson also git-inits wraps into the tree
-          git submodule update --init --depth 1 || true
+          cd fork && git submodule update --init --depth 1 || true
 
       - name: Patch fork toolchain (zlib URL rot; xterm-pty wake-fix version)
         run: |
@@ -84,6 +86,9 @@ jobs:
           docker exec forkbuild emmake make -j"$(nproc)" qemu-system-x86_64
           mkdir -p out/fork
           docker exec forkbuild sh -c 'cd /build && tar cf - qemu-system-x86_64*' | tar xf - -C out/fork
+          # Which fork tree this engine is: pack-site.sh pairs it only with a
+          # snapshot-set whose FORK_REVISION is the same commit.
+          git -C fork rev-parse HEAD > out/fork/FORK_REVISION
 
           # The page needs more than the engine binary, and all of it has to
           # come from THIS build: the browser's xterm/xterm-pty must be the same

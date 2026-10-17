@@ -403,6 +403,78 @@ def run_checks(con):
     check('#60 the console accepts a window size', out.strip().endswith('43 160'), out)
     capture(con, 'stty rows 24 cols 80')
 
+    # ---- #63 the utilities that were missing ------------------------------
+    tools = ('file', 'wget', 'nslookup', 'nft', 'cryptsetup', 'lpr', 'lpq', 'lprm')
+    rc, out = capture(con, 'command -v ' + ' '.join(tools))
+    # command -v succeeds when any one of the names is found, so count them
+    check('#63 %s are all on the PATH' % ' '.join(tools),
+          rc == 0 and sorted(os.path.basename(p) for p in out.split()) == sorted(tools), out)
+    rc, out = capture(con, 'man -w ' + ' '.join(tools))
+    check('#63 man resolves a page for each of them',
+          rc == 0 and out.count('/man/') == len(tools), out)
+    rc, out = capture(con, 'file -bL /usr/bin/ls')
+    check('#63 file identifies a binary', 'ELF 64-bit' in out, out)
+    # the #58 http.server is still listening on loopback
+    rc, out = capture(con, 'wget -nv -O /dev/null http://localhost:8111/', 120)
+    check('#63 wget fetches over loopback', rc == 0, out)
+    t = time.time()
+    rc, out = capture(con, 'wget -O /dev/null http://snapshot.ubuntu.com/', 90)
+    check('#63 wget of an outside URL fails fast (%.1fs)' % (time.time() - t),
+          rc != 0 and time.time() - t < 30, out)
+    t = time.time()
+    rc, out = capture(con, 'nslookup snapshot.ubuntu.com', 90)
+    check('#63 nslookup fails fast (%.1fs)' % (time.time() - t),
+          rc != 0 and time.time() - t < 30, out)
+
+    # ---- #63 nft, alongside ufw -------------------------------------------
+    # /etc/nftables.conf starts with `flush ruleset`, ufw's rules included
+    rc, out = capture(con, 'systemctl is-enabled nftables.service')
+    check('#63 nftables.service is disabled', out.strip() == 'disabled', out)
+    # After #58, so ufw has already been through iptables-nft. One transaction:
+    # the table loads whole or not at all, and is deleted straight after.
+    rc, out = capture(con, "sudo nft 'add table inet bashtion63; "
+                           "add chain inet bashtion63 input "
+                           "{ type filter hook input priority 0; policy accept; }; "
+                           "add rule inet bashtion63 input ct state established,related accept; "
+                           "add rule inet bashtion63 input tcp dport 8163 reject' && "
+                           "sudo nft list table inet bashtion63", 180)
+    check('#63 nft loads an inet table with a ct state rule and a reject',
+          rc == 0 and 'ct state established,related accept' in out
+          and 'tcp dport 8163 reject' in out, out)
+    rc, out = capture(con, 'sudo nft delete table inet bashtion63 && sudo nft list tables', 180)
+    check('#63 ...and deletes it, leaving no table behind',
+          rc == 0 and 'bashtion63' not in out, out)
+
+    # ---- #63 LUKS over dm-crypt -------------------------------------------
+    # Only the PBKDF is forced cheap. This checks the kernel side - dm-crypt
+    # for the data, AF_ALG for the keyslots, XTS - and argon2id's default cost
+    # on native TCG says nothing about the browser. Formatted, opened, closed
+    # and removed in one command, so a failure strands nothing.
+    rc, out = capture(con,
+                      "sudo bash -c 'f=/tmp/bashtion-63.luks; truncate -s 32M $f; "
+                      "echo bashtion-63 | cryptsetup luksFormat --batch-mode "
+                      "--pbkdf pbkdf2 --pbkdf-force-iterations 1000 $f; echo format=$?; "
+                      "echo bashtion-63 | cryptsetup open $f bashtion63; echo open=$?; "
+                      "test -b /dev/mapper/bashtion63 && echo mapped=1; "
+                      "cryptsetup status bashtion63; cryptsetup close bashtion63; echo close=$?; "
+                      "rm -f $f; udevadm settle; "
+                      "echo maps=$(ls /dev/mapper | grep -c bashtion63) "
+                      "loops=$(losetup -a | grep -c bashtion-63)' 2>&1", 600)
+    words = out.split()
+    check('#63 cryptsetup formats a LUKS volume on a file and opens it',
+          'format=0' in words and 'open=0' in words and 'mapped=1' in words, out)
+    check('#63 ...with the default cipher, aes-xts-plain64',
+          re.search(r'cipher:\s+aes-xts-plain64\b', out) is not None, out)
+    check('#63 ...and closing it leaves no mapping or loop device behind',
+          'close=0' in words and 'maps=0' in words and 'loops=0' in words, out)
+
+    # ---- #63 the BSD printing commands ------------------------------------
+    # No queue is configured, so there is nothing to list - but lpq has to
+    # hear that from the scheduler, not fail to reach it.
+    rc, out = capture(con, 'lpq', 180)
+    check('#63 lpq reaches the cups scheduler',
+          'no default destination' in out and 'Unable to connect' not in out, out)
+
     # ---- #70 a save works when / is 100% full -----------------------------
     # LAST on purpose: this fills the root filesystem, and anything that ran
     # after a failed cleanup would be measuring a full disk. pack used to write

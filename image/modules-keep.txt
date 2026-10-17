@@ -16,6 +16,11 @@ dm_crypt
 dm_zero
 quota_v2
 quota_tree
+# cryptsetup (#63) checks and encrypts LUKS keyslots through the kernel's
+# AF_ALG socket interface; dm_crypt above only carries the data. Without
+# algif_skcipher `luksFormat` fails with "Required kernel crypto interface
+# not available", although everything the volume itself needs is there.
+algif_skcipher
 # shared home directory
 9p
 9pnet_virtio
@@ -75,6 +80,13 @@ xt_hl
 ?ip6t_mh
 nf_reject_ipv4
 ?nf_reject_ipv6
+# nft itself (#63), beyond what iptables-nft instantiates: `ct state
+# established,related accept`, the first rule of nearly every nftables
+# ruleset, is nft_ct, and `reject` in an inet table is nft_reject_inet.
+# Without them the whole ruleset fails to load with "No such file or
+# directory", which reads as a missing file rather than a missing module.
+?nft_ct
+?nft_reject_inet
 # misc the labs touch
 ?rtc_cmos
 overlay

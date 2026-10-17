@@ -15,10 +15,11 @@ The requirement that drives every decision here is **full system-administration 
 - systemd as PID 1
 - `cron` and `atd` running as real daemons
 - LVM — `pvcreate` / `vgcreate` / `lvcreate` / `lvextend` over device-mapper
+- LUKS encryption — `cryptsetup luksFormat` / `open` / `close` over dm-crypt
 - ext4 with `mount`, `/etc/fstab`, `mount -a`, and `e2fsck`
 - disk quotas — `quotacheck` / `quotaon` / `edquota` / `repquota`
 - a second writable block device (`/dev/vdb`) for storage work
-- netfilter, so `iptables` and `ufw` function
+- netfilter, so `iptables`, `nft` and `ufw` function
 - 9p/virtio, for a host share the guest can mount (`~/share`; unused in the browser,
   where save/restore rides the serial console instead)
 - an unprivileged user with `sudo`, where privileged operations genuinely fail without it

@@ -33,7 +33,7 @@ GUEST_RUN=$(gh run list -w snapshot.yml -b main -s success -L 1 --json databaseI
 rm -rf /tmp/engine /tmp/guest
 gh run download "$ENGINE_RUN" -n qemu-engine  -D /tmp/engine
 gh run download "$GUEST_RUN"  -n snapshot-set -D /tmp/guest
-make site ENGINE=/tmp/engine GUEST=/tmp/guest R2TAG=v4
+make site ENGINE=/tmp/engine GUEST=/tmp/guest R2TAG=v5
 ```
 
 Without a run id, `gh run download -n` takes the newest artifact of that name
@@ -46,10 +46,10 @@ older than the engine's; that is fine as long as both name the same
 `FORK_REVISION`, and if they do not, `gh workflow run snapshot.yml` captures a
 new one.
 
-`R2TAG` must be the tag `deploy/worker.js` serves — the `.v4` in its
+`R2TAG` must be the tag `deploy/worker.js` serves — the `.v5` in its
 `R2_FILES` keys. The snapshot-set bundles are named by it
-(`load-rootfsB.v4.data`, `load-state.v4.data`, `load-kernel.v4.data`,
-`load-lab.v4.data`, `load-rom.v4.data`), and
+(`load-rootfsB.v5.data`, `load-state.v5.data`, `load-kernel.v5.data`,
+`load-lab.v5.data`, `load-rom.v5.data`), and
 `pack-site.sh` refuses a build whose names are not exactly what the Worker
 serves, so any other tag, or none, cannot be deployed. **Updating later**
 says when it moves.
@@ -73,10 +73,10 @@ produces a VM that will not resume. `pack-site.sh` takes the right one.
 
 | File | Size | Where it goes |
 |------|------|---------------|
-| `load-rootfsB.v4.data` (the Ubuntu disk) | ~1.0 GB | **R2** |
-| `load-state.v4.data` (the saved running state) | ~300 MiB | **R2** |
+| `load-rootfsB.v5.data` (the Ubuntu disk) | ~1.0 GB | **R2** |
+| `load-state.v5.data` (the saved running state) | ~300 MiB | **R2** |
 | `qemu-system-x86_64.d8537ec6ccf0354a.wasm` (the engine, named by its hash) | ~39 MiB | **R2** |
-| the page, JS, `load-kernel.v4.data` (17 MiB), ROM, lab disk, `vendor/` | each < 25 MiB | **Static Assets** |
+| the page, JS, `load-kernel.v5.data` (17 MiB), ROM, lab disk, `vendor/` | each < 25 MiB | **Static Assets** |
 
 Sizes drift with the guest image — the rootfs grew from ~1038 MiB when man pages
 and a real free-space target were added. `pack-site.sh` prints the current
@@ -91,9 +91,9 @@ sidesteps all cross-origin (CORS/CORP) complexity.
 
 ```
 browser ──▶ https://lab.bashtion.dev
-             ├─ /  /*.js  /vendor/*  /load-kernel.v4.data …      ─▶ Static Assets (public/)
+             ├─ /  /*.js  /vendor/*  /load-kernel.v5.data …      ─▶ Static Assets (public/)
              └─ /qemu-system-x86_64.d8537ec6ccf0354a.wasm        ─▶ worker.js ─▶ private R2
-                /load-rootfsB.v4.data  /load-state.v4.data           (bucket binding)
+                /load-rootfsB.v5.data  /load-state.v5.data           (bucket binding)
 ```
 
 ### Does it fit the free tier?
@@ -114,10 +114,10 @@ Yes, comfortably.
 
 ## Caching
 
-`worker.js` stores each full GET of `qemu-system-x86_64.d8537ec6ccf0354a.wasm` and `load-state.v4.data`
+`worker.js` stores each full GET of `qemu-system-x86_64.d8537ec6ccf0354a.wasm` and `load-state.v5.data`
 in Cloudflare's edge cache (they are immutable), so a second visitor in the same
 region gets them straight from cache — no Worker invocation, no R2 read. The
-~1038 MiB `load-rootfsB.v4.data` is intentionally **not** cached: it is above the
+~1038 MiB `load-rootfsB.v5.data` is intentionally **not** cached: it is above the
 free-plan max cacheable object size, and skipping it avoids streaming a huge body
 through the Worker's 128 MiB memory (it still serves fine from R2, and egress is
 free). Ranged requests bypass the cache and read R2 directly; browsers also cache
@@ -212,8 +212,8 @@ The engine and the saved-state file are under wrangler's single-upload cap:
 npx wrangler r2 object put bashtion-assets/qemu-system-x86_64.d8537ec6ccf0354a.wasm \
     --file out/site/qemu-system-x86_64.d8537ec6ccf0354a.wasm --remote
 
-npx wrangler r2 object put bashtion-assets/load-state.v4.data \
-    --file out/site/load-state.v4.data --remote
+npx wrangler r2 object put bashtion-assets/load-state.v5.data \
+    --file out/site/load-state.v5.data --remote
 ```
 
 ## Step 4 — Upload the rootfs (multipart) with a least-privilege token
@@ -271,11 +271,11 @@ nor `no_check_bucket` outside the advanced prompts.)
 **4c. Upload (multipart):**
 
 ```sh
-rclone copy out/site/load-rootfsB.v4.data r2:bashtion-assets/ \
+rclone copy out/site/load-rootfsB.v5.data r2:bashtion-assets/ \
   --s3-upload-cutoff=100M --s3-chunk-size=100M --progress
 ```
 
-This stores it as `r2:bashtion-assets/load-rootfsB.v4.data`. (The `.v4` in
+This stores it as `r2:bashtion-assets/load-rootfsB.v5.data`. (The `.v5` in
 these names is the tag `worker.js` serves; use whatever `split.sh` printed.)
 
 **4d. Confirm all three objects landed, then retire the token:**
@@ -337,8 +337,8 @@ made it into the deploy.
   image, which fails later and mysteriously.
 
   So: the change that alters the set also moves the two keys in `worker.js`'s
-  `R2_FILES` to a tag that has never been uploaded (#63 took them from v3 to
-  v4; the next is v5). At release, `make site ENGINE=... GUEST=... R2TAG=<that
+  `R2_FILES` to a tag that has never been uploaded (#56 took them from v4 to
+  v5; the next is v6). At release, `make site ENGINE=... GUEST=... R2TAG=<that
   tag>`, upload the new objects, `wrangler deploy` (the switch is atomic —
   nothing points at the new keys until the page does), then delete the old
   objects once traffic has moved. `pack-site.sh` refuses to finish if the page
@@ -350,15 +350,15 @@ made it into the deploy.
   `web/test/deploy-docs.test.mjs` fails until it does. If the rate-limit rule
   is set up in the dashboard, edit its paths at release too: it matches exact
   paths, so it silently stops applying once the Worker serves new ones.
-  The tag renames the ROMs too (`load-rom.v4.data`): `vm.state` carries the
+  The tag renames the ROMs too (`load-rom.v5.data`): `vm.state` carries the
   ROM regions and will not restore against ones of another size, and they
   change only when the fork pin moves, which is a new `vm.state` anyway.
-  And the kernel (`load-kernel.v4.data`). It changes only when the image's
+  And the kernel (`load-kernel.v5.data`). It changes only when the image's
   `ARG SNAPSHOT` date moves and Ubuntu's kernel moved with it. A stale kernel
   does not show when the page starts, because the running kernel is inside
   `vm.state`, but a reboot inside the VM cold-boots the file, and the loader
   takes whatever the browser has cached without checking its length.
-  The tag renames the small lab disk too (`load-lab.v4.data`): it is a static
+  The tag renames the small lab disk too (`load-lab.v5.data`): it is a static
   asset, not an R2 object, but it belongs to the same matched set, and a fixed
   name is how the 1 GiB disk would outlive the move to 4 GiB in browsers that
   cached it as immutable. Nothing to upload for it - `load-lab.js` names it.
@@ -418,7 +418,7 @@ made it into the deploy.
   paths — click **Edit expression** and paste:
 
   ```
-  http.request.uri.path in {"/qemu-system-x86_64.d8537ec6ccf0354a.wasm" "/load-rootfsB.v4.data" "/load-state.v4.data"}
+  http.request.uri.path in {"/qemu-system-x86_64.d8537ec6ccf0354a.wasm" "/load-rootfsB.v5.data" "/load-state.v5.data"}
   ```
 
   Set **the same characteristics = IP** (the only per-IP option on free), then
@@ -472,7 +472,7 @@ made it into the deploy.
   running it.
 - **Big file 404s at runtime** → the R2 key does not match the request path.
   Keys must be exactly the ones `worker.js`'s `R2_FILES` serves:
-  `qemu-system-x86_64.d8537ec6ccf0354a.wasm`, `load-rootfsB.v4.data`, `load-state.v4.data`.
+  `qemu-system-x86_64.d8537ec6ccf0354a.wasm`, `load-rootfsB.v5.data`, `load-state.v5.data`.
 - **`pack-site: page/Worker do not match the bundles`** → the build's tag is
   not the one `worker.js` serves (or there was none). Re-run `make site` with
   `R2TAG` set to the tag in `R2_FILES`; do not add unversioned or old-tag keys

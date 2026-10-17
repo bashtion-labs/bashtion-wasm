@@ -89,7 +89,7 @@ pack:
 ## id, from successful runs on main, into fresh directories (deploy/README.md,
 ## "Getting the files", has the commands); a bare `gh run download -n` takes
 ## the newest artifact of that name from any run, pull requests included.
-## Then: make site ENGINE=/tmp/engine GUEST=/tmp/guest R2TAG=v4
+## Then: make site ENGINE=/tmp/engine GUEST=/tmp/guest R2TAG=v5
 ## R2TAG versions the snapshot-set bundles (the two on R2, and the kernel, lab
 ## disk and ROMs); bump it whenever their bytes change, or caches will keep
 ## serving the old ones (see deploy/README.md). It must be the tag

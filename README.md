@@ -232,8 +232,8 @@ host serving the page must send `Cross-Origin-Opener-Policy: same-origin` and
 
 `deploy/` ships the site on Cloudflare's free plan. The small files (page, JS, kernel, ROM,
 lab disk) are served as static assets; the three large files (the engine,
-`qemu-system-x86_64.d8537ec6ccf0354a.wasm`, named by its hash, and `load-rootfsB.v3.data` and
-`load-state.v3.data` - each over the 25 MiB static-asset cap; `v3` is the snapshot set's
+`qemu-system-x86_64.d8537ec6ccf0354a.wasm`, named by its hash, and `load-rootfsB.v4.data` and
+`load-state.v4.data` - each over the 25 MiB static-asset cap; `v4` is the snapshot set's
 release tag; `deploy/worker.js` names all three) live in a **private R2 bucket**
 and are streamed by a small Worker (`deploy/worker.js`) from the same origin. R2's zero egress
 fees cover the ~1.2 GB per cold load.

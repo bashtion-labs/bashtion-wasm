@@ -145,8 +145,8 @@ RUN KVER=$(cat /kver); chroot /rootfs depmod "$KVER" && du -sh /rootfs/lib/modul
 # hard assertions: every module a required capability depends on must exist as
 # a .ko for this kernel or be built in - a miss fails the build, not the user.
 RUN KVER=$(cat /kver); ok=1; \
-    for m in dm_mod dm_snapshot dm_mirror dm_thin_pool quota_v2 quota_tree \
-             9p 9pnet_virtio ip_tables iptable_filter nf_conntrack \
+    for m in dm_mod dm_snapshot dm_mirror dm_thin_pool dm_crypt quota_v2 quota_tree \
+             algif_skcipher 9p 9pnet_virtio ip_tables iptable_filter nf_conntrack \
              nf_tables nft_compat xt_conntrack xt_limit xt_tcpudp xt_addrtype \
              ipt_REJECT ip6t_rt xt_hl overlay virtio_blk virtio_pci; do \
       if modinfo -b /rootfs -k "$KVER" "$m" >/dev/null 2>&1; then continue; fi; \

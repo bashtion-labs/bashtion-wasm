@@ -15,10 +15,11 @@ The requirement that drives every decision here is **full system-administration 
 - systemd as PID 1
 - `cron` and `atd` running as real daemons
 - LVM — `pvcreate` / `vgcreate` / `lvcreate` / `lvextend` over device-mapper
+- LUKS encryption — `cryptsetup luksFormat` / `open` / `close` over dm-crypt
 - ext4 with `mount`, `/etc/fstab`, `mount -a`, and `e2fsck`
 - disk quotas — `quotacheck` / `quotaon` / `edquota` / `repquota`
 - a second writable block device (`/dev/vdb`) for storage work
-- netfilter, so `iptables` and `ufw` function
+- netfilter, so `iptables`, `nft` and `ufw` function
 - 9p/virtio, for a host share the guest can mount (`~/share`; unused in the browser,
   where save/restore rides the serial console instead)
 - an unprivileged user with `sudo`, where privileged operations genuinely fail without it
@@ -231,8 +232,8 @@ host serving the page must send `Cross-Origin-Opener-Policy: same-origin` and
 
 `deploy/` ships the site on Cloudflare's free plan. The small files (page, JS, kernel, ROM,
 lab disk) are served as static assets; the three large files (the engine,
-`qemu-system-x86_64.d8537ec6ccf0354a.wasm`, named by its hash, and `load-rootfsB.v3.data` and
-`load-state.v3.data` - each over the 25 MiB static-asset cap; `v3` is the snapshot set's
+`qemu-system-x86_64.d8537ec6ccf0354a.wasm`, named by its hash, and `load-rootfsB.v4.data` and
+`load-state.v4.data` - each over the 25 MiB static-asset cap; `v4` is the snapshot set's
 release tag; `deploy/worker.js` names all three) live in a **private R2 bucket**
 and are streamed by a small Worker (`deploy/worker.js`) from the same origin. R2's zero egress
 fees cover the ~1.2 GB per cold load.

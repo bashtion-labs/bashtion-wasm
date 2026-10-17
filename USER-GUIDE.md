@@ -125,7 +125,9 @@ you still need those changes, make them again.
   not work, and that is expected. But `ping 127.0.0.1` (talking to itself) does work.
 - **Installing programs.** You can install some programs with `sudo apt install`, but only the
   ones that were packed in ahead of time. It will not download new ones from the internet.
-  Try `sudo apt install tree` to see it work.
+  Try `sudo apt install tree` to see it work. `ls /srv/apt` shows which programs you can
+  install. Asking for any other one says "Unable to locate package" straight away. That means
+  it was not packed in, not that you typed the name wrong.
 - **A spare disk.** There is a second, empty 4 GB disk called `/dev/vdb`, for practising with
   partitions, filesystems and LVM. It is not a place to keep big files: everything written to
   it is held in your browser's memory, so filling it up can crash the tab and lose any work you

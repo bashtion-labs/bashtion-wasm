@@ -177,7 +177,10 @@ you see only "Saving your work..." and a completion tick, never a wall of base64
   is served from a small repository baked into the image (offline) for the included packages.
   The guest is configured to be *coherently* offline rather than half-configured:
   `systemd-resolved` is masked, `/etc/resolv.conf` and `/etc/netplan/` say why they are empty,
-  and `/etc/motd` states it at the start of every session.
+  and `/etc/motd` states it at the start of every session. That repository is apt's only
+  source, and `/etc/apt/sources.list` says why it lists no mirror. apt does not retry, and
+  `apt update` fails rather than report a fetch it could not make as success, so a package
+  that is not in the repository fails in seconds.
 - **A save keeps your files, not the whole machine.** It brings back `/home/user` and what
   changed under `/etc`, `/opt`, `/srv`, `/usr/local`, `/root` and `/var/spool/cron` - those
   only onto the same build of the image; onto a different build, the home directory alone.

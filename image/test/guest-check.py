@@ -3,12 +3,13 @@
 supposed to be.
 
 Every check here exists because something shipped broken and nothing caught
-it: an empty offline apt index, no man pages, a root filesystem 95% full, a
-failed fallocate that still filled it and a save that could not run once it
-had, a user outside adm, a half-configured network, a firewall that reported
-rules it had not loaded, and a clock running at 0.4x wall time. Build-time
-assertions cover the parts that are visible in the rootfs; these cover the
-parts that are only true once the kernel is running.
+it: an empty offline apt index, an apt that spent minutes retrying a mirror it
+could never reach and then reported success, no man pages, a root filesystem
+95% full, a failed fallocate that still filled it and a save that could not
+run once it had, a user outside adm, a half-configured network, a firewall
+that reported rules it had not loaded, and a clock running at 0.4x wall time.
+Build-time assertions cover the parts that are visible in the rootfs; these
+cover the parts that are only true once the kernel is running.
 
 The invocation mirrors snapshot/make-snapshot.sh, so this tests the machine
 that is actually shipped. Native TCG, not the wasm engine - it cannot prove
@@ -186,6 +187,62 @@ def run_checks(con):
     check('#53 apt install tree succeeds offline', rc == 0, out)
     rc, out = capture(con, 'tree --version')
     check('#53 the installed package runs', rc == 0, out)
+
+    # ---- #56 apt fails at once offline, and says so -----------------------
+    # mmdebstrap left the snapshot mirror in sources.list and the build's
+    # Acquire::Retries "5" in apt.conf.d, so every Ubuntu package looked
+    # installable: apt retried each one for minutes, and `apt update` ended
+    # "All packages are up to date." with exit 0. Every status checked below
+    # is apt's own: apt writes to a file, not into a pipe as in #53.
+    # indextargets lists every configured source, fetched or not; apt-cache
+    # policy would show only those whose lists were downloaded.
+    rc, out = capture(con, "apt-get indextargets --no-release-info --format '$(URI)'")
+    uris = out.split()
+    check('#56 apt has no source but the offline repository',
+          len(uris) > 0 and all(u.startswith('file:/srv/apt/') for u in uris), out)
+    # the first file anyone opens to find the mirror, so it says why there is none
+    rc, out = capture(con, "grep -q bashtion /etc/apt/sources.list && "
+                           "grep -cvE '^\\s*(#|$)' /etc/apt/sources.list")
+    check('#56 /etc/apt/sources.list explains itself', out.strip() == '0', out)
+    # Retries 0 alone still lets `apt update` exit 0 on a failed fetch: it
+    # takes Error-Mode any to make that an error
+    rc, out = capture(con, 'apt-config shell R Acquire::Retries E APT::Update::Error-Mode')
+    words = out.split()
+    check('#56 apt neither retries nor ignores a failed fetch',
+          "R='0'" in words and "E='any'" in words, out)
+    # Error-Mode any must not fail the local-only update: the flat repo's
+    # Ign: InRelease / Release lines are not failures. 60 s, not 30, because
+    # it still reads the dpkg database under TCG on one vCPU.
+    t = time.time()
+    rc, out = capture(con, 'sudo apt-get update >/tmp/bashtion-56.log 2>&1; echo "apt=$?"; '
+                           'tail -3 /tmp/bashtion-56.log; rm -f /tmp/bashtion-56.log', 180)
+    dt = time.time() - t
+    check('#56 apt-get update succeeds offline (%.1fs)' % dt,
+          'apt=0' in out.split() and dt < 60, out)
+    # nginx is in Ubuntu main, so the old image tried to fetch it; it is not
+    # in /srv/apt, so now apt has no candidate for it at all
+    t = time.time()
+    rc, out = capture(con, 'sudo apt-get install -y nginx >/tmp/bashtion-56.log 2>&1; '
+                           'echo "apt=$?"; tail -3 /tmp/bashtion-56.log; '
+                           'rm -f /tmp/bashtion-56.log', 90)
+    dt = time.time() - t
+    check('#56 apt install of a package not in /srv/apt fails at once (%.1fs)' % dt,
+          'apt=100' in out.split() and 'Unable to locate package' in out and dt < 30, out)
+    # A mirror added from a tutorial must fail, quickly, and not exit 0 as if
+    # it had been fetched. Added and removed in one command, so a failure
+    # leaves nothing under /etc for the #50 clean-pack check.
+    t = time.time()
+    rc, out = capture(con, "echo 'deb http://archive.ubuntu.com/ubuntu resolute main' | "
+                           "sudo tee /etc/apt/sources.list.d/bashtion-56.list >/dev/null; "
+                           "sudo apt-get update >/tmp/bashtion-56.log 2>&1; echo \"apt=$?\"; "
+                           "sudo rm -f /etc/apt/sources.list.d/bashtion-56.list; "
+                           "tail -3 /tmp/bashtion-56.log; rm -f /tmp/bashtion-56.log", 90)
+    dt = time.time() - t
+    check('#56 with a mirror added, apt-get update fails fast and says so (%.1fs)' % dt,
+          'apt=100' in out.split() and 'Failed to fetch' in out and dt < 30, out)
+    # the one screen everyone sees names the way to list what can be installed
+    rc, out = capture(con, "grep -c 'ls /srv/apt' /etc/motd")
+    check('#56 the motd says how to list what apt can install', out.strip() == '1', out)
 
     # ---- #54 manual pages ------------------------------------------------
     rc, out = capture(con, 'man -w ls')

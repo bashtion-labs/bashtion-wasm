@@ -63,8 +63,11 @@ the command. For example:
 sudo lsblk
 ```
 
-On a normal computer, `sudo` asks for a password. Here it does not — you can just use it. This
-keeps things simple.
+On a normal Ubuntu computer, `sudo` asks for your own password. Here it does not, on purpose —
+you can just use it.
+
+The `root` account is locked, just as it is on a normal Ubuntu computer, so `su` does not work.
+If you want a root shell, type `sudo -i`. Type `exit` to leave it.
 
 ## Saving your work
 

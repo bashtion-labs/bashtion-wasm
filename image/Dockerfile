@@ -184,13 +184,11 @@ RUN set -e; tar -C /seed -cf - . | tar -C /rootfs -xf -; \
 # a password prompt, so requiring one breaks saving and loading. A password
 # with NOPASSWD for just those commands would gate nothing: bashtion-unpack
 # writes /etc from an archive the user supplies, so it is as good as root. The
-# people this is for have never used Linux, nothing done in the tab leaves it,
-# and nobody has shown an echo-off password prompt working in the browser
-# since the pty backport (see the autologin below). The sudoers file says why
-# itself. In sudoers a "#" followed by digits is a user ID, not a comment -
-# a line "#62 ..." is a syntax error in sudo-rs and sudo.ws alike (measured) -
-# so the build checks the result with the guest's own visudo: sudo-rs, the
-# implementation that reads the policy at runtime.
+# people this is for have never used Linux, and nothing done in the tab leaves
+# it. The sudoers file says why itself. In sudoers a "#" followed by digits is
+# a user ID, not a comment - a line "#62 ..." is a syntax error in sudo-rs and
+# sudo.ws alike (measured) - so the build checks the result with the guest's
+# own visudo: sudo-rs, the implementation that reads the policy at runtime.
 RUN set -e; \
     echo bashtion > /rootfs/etc/hostname; \
     printf '127.0.0.1\tlocalhost\n127.0.1.1\tbashtion\n' > /rootfs/etc/hosts; \

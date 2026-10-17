@@ -323,6 +323,17 @@ RUN set -e; mkdir -p /rootfs/srv/apt; \
 # gzip the pipeline still exited 0 - so the image shipped a 20-byte empty
 # gzip and apt could not see a single one of the .debs sitting next to it.
 # Scan to a file, ASSERT the index covers every .deb, and only then compress.
+#
+# Then make the repo apt's ONLY source (#56). mmdebstrap writes its mirror into
+# sources.list and every --aptopt into 99mmdebstrap, so the guest shipped with
+# the snapshot mirror, ~220 MB of indexes and caches built from it, and the
+# build's Acquire::Retries "5": `apt install` of any Ubuntu package retried a
+# mirror it could never reach, and `apt update` ended "All packages are up to
+# date." with exit 0. The kernel and the repo download above are the last
+# users of the mirror. The retries line is deleted, not overridden: apt reads
+# apt.conf.d in name order, the last value wins, and 99mmdebstrap sorts after
+# every 9x-bashtion name. The update below then proves a local-only update
+# exits 0 under Error-Mode any, and the build asserts the result.
 RUN set -e; \
     ( cd /rootfs/srv/apt && dpkg-scanpackages . /dev/null > /tmp/Packages ); \
     debs=$(find /rootfs/srv/apt -name '*.deb' | wc -l | tr -d ' '); \
@@ -337,8 +348,34 @@ RUN set -e; \
       { echo "FATAL: Packages.gz is empty"; exit 1; }; \
     printf 'deb [trusted=yes] file:/srv/apt ./\n' > /rootfs/etc/apt/sources.list.d/local.list; \
     rm -f /rootfs/etc/apt/sources.list.d/ubuntu.sources; \
+    printf '%s\n' \
+      '# bashtion has no network, so no mirror is listed and nothing here is' \
+      "# misconfigured. apt's one source is the offline repository in /srv/apt" \
+      '# (/etc/apt/sources.list.d/local.list). A package that is not in it fails' \
+      '# at once. See /etc/motd.' \
+      > /rootfs/etc/apt/sources.list; \
+    chmod 644 /rootfs/etc/apt/sources.list; \
+    sed -i '/^Acquire::Retries /d' /rootfs/etc/apt/apt.conf.d/99mmdebstrap; \
+    printf '%s\n' \
+      '// bashtion: apt has no network, so it must fail fast and say so (#56).' \
+      '// No retries: each one only waits longer (1+2+4+8+16 s) for a fetch that' \
+      '// cannot succeed. And an index apt could not fetch makes `apt update`' \
+      '// fail, rather than warn and exit 0 as if it had worked - which matters' \
+      '// as soon as a mirror is added to the sources.' \
+      'Acquire::Retries "0";' \
+      'APT::Update::Error-Mode "any";' \
+      > /rootfs/etc/apt/apt.conf.d/90-bashtion-offline; \
+    chmod 644 /rootfs/etc/apt/apt.conf.d/90-bashtion-offline; \
     rm -rf /rootfs/var/lib/apt/lists/* /rootfs/var/cache/apt/*.bin; \
-    chroot /rootfs apt-get update
+    chroot /rootfs apt-get update; \
+    uris=$(chroot /rootfs apt-get indextargets --no-release-info --format '$(URI)'); \
+    printf 'apt index target: %s\n' $uris; \
+    [ -n "$uris" ] && ! printf '%s\n' "$uris" | grep -qv '^file:/srv/apt/' || \
+      { echo "FATAL: apt has a source other than the offline repository"; exit 1; }; \
+    cfg=$(chroot /rootfs apt-config shell R Acquire::Retries E APT::Update::Error-Mode); \
+    echo "apt config:" $cfg; \
+    printf '%s\n' "$cfg" | grep -qx "R='0'" && printf '%s\n' "$cfg" | grep -qx "E='any'" || \
+      { echo "FATAL: apt retries, or reports a failed fetch as success"; exit 1; }
 # apt must actually offer every package sitting in the repo from the local
 # origin - the symptom being fixed was `apt install tree` falling through to
 # the network with the .deb in the repo apt had just consulted. Packages that
@@ -477,8 +514,8 @@ RUN set -e; rm -f /rootfs/etc/motd; printf '%s\n' \
       '  bashtion - a real Linux system, running in your browser tab.' \
       '' \
       '  Network   None, by design. Loopback works (ping 127.0.0.1); nothing' \
-      '            outside this VM is reachable. `apt install` is served from' \
-      '            the offline repository in /srv/apt.' \
+      '            else does. `apt install` can install only the packages in' \
+      '            the offline repository /srv/apt: `ls /srv/apt` lists them.' \
       '  Storage   / has limited room: `df -h /` shows what is left. /dev/vdb' \
       "            is a spare ${VDB_GIB} GiB disk, empty and unpartitioned: practise" \
       '            partitioning, LVM and quotas on it, but do not fill it - what' \

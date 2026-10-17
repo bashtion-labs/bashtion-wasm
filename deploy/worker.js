@@ -32,7 +32,8 @@
 // Bump it in the same commit as the change to the snapshot set, to a tag never
 // uploaded before: pack-site.sh only accepts the tag named here, so a stale one
 // makes overwriting the live objects the one command that passes. v4 is the
-// set #63 changed (the added utilities); v3 is the set #70 and #72 changed
+// set #63 and #56 changed (the added utilities; the offline repository as
+// apt's only source, with no retries); v3 is the set #70 and #72 changed
 // (4 GiB lab disk and file-size cap; archives that name their build); v2 is the
 // set before that.
 //

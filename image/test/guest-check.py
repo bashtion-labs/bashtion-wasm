@@ -226,7 +226,7 @@ def run_checks(con):
                            'echo "apt=$?"; tail -3 /tmp/bashtion-56.log; '
                            'rm -f /tmp/bashtion-56.log', 90)
     dt = time.time() - t
-    check('#56 apt install of a package not in /srv/apt fails at once (%.1fs)' % dt,
+    check('#56 apt-get install of a package not in /srv/apt fails at once (%.1fs)' % dt,
           'apt=100' in out.split() and 'Unable to locate package' in out and dt < 30, out)
     # A mirror added from a tutorial must fail, quickly, and not exit 0 as if
     # it had been fetched. Added and removed in one command, so a failure

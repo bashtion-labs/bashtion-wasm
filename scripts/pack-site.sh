@@ -15,9 +15,9 @@
 #               vdb.qcow2, vm.state and FORK_REVISION
 #     --out     where to assemble (default out/site)
 #     --r2-tag  version suffix for the snapshot-set bundles - the two on R2,
-#               the kernel, the lab disk and the ROMs - e.g. --r2-tag v5 gives
-#               load-rootfsB.v5.data, load-state.v5.data, load-kernel.v5.data,
-#               load-lab.v5.data and load-rom.v5.data. Must be the tag
+#               the kernel, the lab disk and the ROMs - e.g. --r2-tag v4 gives
+#               load-rootfsB.v4.data, load-state.v4.data, load-kernel.v4.data,
+#               load-lab.v4.data and load-rom.v4.data. Must be the tag
 #               deploy/worker.js serves (see there for when to bump it).
 #
 # Files are located by NAME anywhere under the given directory, so it does not

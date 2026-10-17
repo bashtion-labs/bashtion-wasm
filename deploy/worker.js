@@ -31,11 +31,10 @@
 // --r2-tag), deploy, and delete the old objects once traffic has moved.
 // Bump it in the same commit as the change to the snapshot set, to a tag never
 // uploaded before: pack-site.sh only accepts the tag named here, so a stale one
-// makes overwriting the live objects the one command that passes. v5 is the
-// set #56 changed (the offline repository as apt's only source, no retries);
-// v4 is the set #63 changed (the added utilities); v3 is the set #70 and #72
-// changed (4 GiB lab disk and file-size cap; archives that name their build);
-// v2 is the set before that.
+// makes overwriting the live objects the one command that passes. v4 is the
+// set #63 changed (the added utilities); v3 is the set #70 and #72 changed
+// (4 GiB lab disk and file-size cap; archives that name their build); v2 is the
+// set before that.
 //
 // The engine is versioned too, by content: pack-site.sh names it
 // qemu-system-x86_64.<first 16 hex of its sha256>.wasm and rewrites out.js to
@@ -46,8 +45,8 @@
 // does; pack-site.sh refuses a build whose engine is not the one named here.
 const R2_FILES = {
   '/qemu-system-x86_64.d8537ec6ccf0354a.wasm': { key: 'qemu-system-x86_64.d8537ec6ccf0354a.wasm', type: 'application/wasm' },
-  '/load-rootfsB.v5.data':       { key: 'load-rootfsB.v5.data',       type: 'application/octet-stream' },
-  '/load-state.v5.data':         { key: 'load-state.v5.data',         type: 'application/octet-stream' },
+  '/load-rootfsB.v4.data':       { key: 'load-rootfsB.v4.data',       type: 'application/octet-stream' },
+  '/load-state.v4.data':         { key: 'load-state.v4.data',         type: 'application/octet-stream' },
 };
 
 const SECURITY_HEADERS = {

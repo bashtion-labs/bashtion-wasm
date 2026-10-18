@@ -22,6 +22,10 @@
 //    on the wire the moment it is typed. Every marker is emitted with its
 //    token split across adjacent shell quotes ('BW''R-OK'), which is one word
 //    to the shell and never appears whole in the echo.
+//
+// The same overlay and console also take a checkpoint of the whole machine
+// and go back to it, through QEMU's monitor rather than the shell (#65; see
+// "checkpoint" below).
 'use strict';
 
 const SERIALFS = (() => {
@@ -166,6 +170,10 @@ const SERIALFS = (() => {
                 timer = setTimeout(() => { el.style.display = 'none'; bar.style.background = '#4a9eff'; }, 12000); },
     };
   })();
+
+  // The overlay goes away; the status line stays until the next save, so
+  // what happened is still on screen after the user looks back.
+  const status = (m) => { if (typeof window.__sfsStatus === 'function') window.__sfsStatus(m); };
 
   // ---- integrity ---------------------------------------------------------
   // POSIX cksum's CRC (CRC-32/CKSUM: poly 0x04C11DB7, init 0, not reflected,
@@ -401,6 +409,213 @@ const SERIALFS = (() => {
     }
   }
 
+  // ---- checkpoint (#65) --------------------------------------------------
+  // The whole running machine - memory, devices and both disks - kept in the
+  // engine and put back on request, through QEMU's own monitor. It is on the
+  // same -nographic mux as the serial console (Ctrl-A c moves the keyboard
+  // between them); boot.js already drives it there to resume the restored
+  // VM, and anyone can reach it by typing Ctrl-A c, so driving it from here
+  // adds no capability.
+  //
+  // Saving is `stop`, `snapshot_blkdev` (the first time only), `savevm`,
+  // `cont`; going back is `stop`, `loadvm`, `cont`. On the served page the
+  // qcow2 layer took ~20 ms, `savevm` ~0.7 s for a VM SIZE of 299 MiB and
+  // `loadvm` ~0.5 s (measured). Why each piece is there:
+  //
+  //  * The qcow2 layer. `savevm` on the shipped raw root disk fails with
+  //    "Device 'root' is writable but does not support snapshots": a VM
+  //    snapshot is stored inside qcow2 images. `snapshot_blkdev` puts a new
+  //    qcow2 file over root, backed by the raw image, and every root write
+  //    from then on lands in it. It is made at the first checkpoint rather
+  //    than at start, so a session that never takes one is unchanged.
+  //  * Its path is the ENGINE's /tmp - the Emscripten filesystem out.js
+  //    creates, where the disks themselves live - not the guest's /tmp. The
+  //    guest never sees the file, and every build of the engine has /tmp.
+  //  * One fixed tag. `savevm` replaces a snapshot with the same tag, so
+  //    saving again needs no `delvm`; one slot bounds what checkpoints cost in
+  //    memory (the VM SIZE, plus every root cluster written since the first);
+  //    and the replaced snapshot's space is reused (natively, the layer was
+  //    223 MB after two).
+  //  * `stop` first. Nothing the guest prints can then land among the replies
+  //    read here, and the qcow2 layer and the snapshot are taken at one
+  //    instant, with no guest write between them.
+  //  * `cont` after a failed `savevm`, never after a failed `loadvm`. A failed
+  //    save leaves the machine as it was, so it carries on. A failed load may
+  //    have put the disks back and only part of the memory, and a machine
+  //    running on that can corrupt the very work the user would then try to
+  //    download: stopped and honest is better.
+  //  * The bracketed-paste reset. xterm.paste() wraps its text in
+  //    ESC[200~ ... ESC[201~ whenever the program in front has asked for it,
+  //    and the mux then sees ESC straight after Ctrl-A and never switches:
+  //    the `c` and every command after it go to the guest. Any program can
+  //    turn the mode on, and going back is for when a program misbehaves.
+  //  * blur(). HMP's `q` quits the engine, and while the page is in the
+  //    monitor every key the user presses on the terminal would go to it.
+  const LAYER = 'snapshot_blkdev root /tmp/bashtion-root.qcow2 qcow2';
+  const SAVEVM = 'savevm bashtion';
+  const LOADVM = 'loadvm bashtion';
+  const NO_ANSWER = 'The machine did not answer.';
+
+  let switches = 0;        // Ctrl-A c sent by the page: odd means the mux is on the monitor
+  let paused = false;      // `stop` answered, and no `cont` since
+  let layered = false;     // the qcow2 layer is over root
+  let savedAt = null;      // when the snapshot in the slot was taken
+
+  const hhmm = (d) => String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  const sentence = (s) => { s = s.trim(); return /[.!?]$/.test(s) ? s : s + '.'; };
+  const blur = () => { if (window.__xterm) window.__xterm.blur(); };
+  const focus = () => { if (window.__xterm) window.__xterm.focus(); };
+
+  // Ctrl-A c, typed as boot.js types it. Resolves whether the monitor
+  // answered, when this was the switch into it.
+  async function mux() {
+    const t = window.__xterm;
+    if (t && t.modes && t.modes.bracketedPasteMode) {
+      await new Promise((r) => t.write('\x1b[?2004l', r));
+    }
+    const t0 = serialLen();
+    paste('\x01');
+    paste('c');
+    switches++;
+    if (!(switches % 2)) return true;
+    return !!(await waitFor(/\(qemu\) $/, t0, ms('mux', 8000)));
+  }
+
+  // One monitor command. Every reply ends in a fresh `(qemu) `, which the
+  // monitor's echo of the command never contains, and a failure is one line,
+  // `Error: <reason>`. `cmd` is always one of the constants here: nothing the
+  // user or the guest supplies ever goes into one.
+  async function run(cmd, idleMs) {
+    const t0 = serialLen();
+    paste(cmd + '\n');
+    if (!await waitFor(/\(qemu\) $/, t0, idleMs)) return { why: NO_ANSWER };
+    const reply = serialFrom(t0);
+    const err = reply.match(/^Error: ([^\r\n]*)/m);
+    if (err) return { why: sentence(err[1]) };
+    if (cmd === 'stop') paused = true;
+    if (cmd === 'cont') paused = false;
+    return { why: null, reply };
+  }
+
+  // Back to the serial side, if the page is in the monitor, resuming the
+  // machine on the way out if the page stopped it and may. Resolves why
+  // `cont` failed, or null.
+  async function leave(resume) {
+    if (!(switches % 2)) return null;
+    const why = paused && resume ? (await run('cont')).why : null;
+    await mux();
+    return why;
+  }
+
+  // After either operation the guest is wrong about two things only the page
+  // knows. The time: its clock is the ACPI PM timer, which stands still while
+  // the VM is stopped, and loadvm puts it back to the moment of the
+  // checkpoint. And the terminal's shape: loadvm puts the tty size back too.
+  // One line at the prompt puts both right and clears what the monitor
+  // printed.
+  //
+  // The clock commands are the two in bootscreen.js's handover(), repeated
+  // rather than shared: this file loads first, and its tests load it alone.
+  async function resync() {
+    const cmds = [
+      'sudo date -u -s @' + Math.floor(Date.now() / 1000) + ' >/dev/null 2>&1',
+      'sudo hwclock --systohc >/dev/null 2>&1',
+    ];
+    const t = window.__xterm;
+    if (t && t.cols && t.rows && typeof TERMFIT === 'object') {
+      const geom = { cols: t.cols, rows: t.rows };
+      cmds.push(TERMFIT.stty(geom));
+      if (window.__geomSync) window.__geomSync.seed(geom);
+    }
+    cmds.push('clear');
+    const t0 = serialLen();
+    paste(cmds.join('; ') + '\n');
+    // Not tidy()'s 8 s: the two sudos print nothing for 8-17 s, and longest
+    // straight after a checkpoint (15-17 s, measured).
+    await waitFor(/[$#] ?$/m, t0);
+    await sleep(200);
+  }
+
+  async function checkpoint() {
+    if (busy) return false;
+    busy = true;
+    try {
+      ov.show('Preparing…');
+      // A prompt is required so that going back to this checkpoint lands at
+      // one, where the re-sync can be typed.
+      if (!await ensureShell()) {
+        ov.fail('Click the terminal, wait for the $ prompt, then try again');
+        return false;
+      }
+      ov.title('Saving a checkpoint…');
+      ov.sub('The whole machine, kept in this tab until you close or reload it.');
+      const earlier = savedAt;
+      blur();
+      let why = await mux() ? null : NO_ANSWER;
+      if (!why) why = (await run('stop')).why;
+      if (!why && !layered) {
+        why = (await run(LAYER, ms('work', WORK_MS))).why;
+        layered = !why;
+      }
+      if (!why) {
+        why = (await run(SAVEVM, ms('work', WORK_MS))).why;
+        // From here the slot holds this state, whatever happens next.
+        if (!why) savedAt = new Date();
+        else {
+          // savevm deletes the old snapshot of the tag before it writes the
+          // new one, so a failure can take the earlier checkpoint with it.
+          const list = await run('info snapshots');
+          if (list.why || !/^\S+\s+bashtion\s/m.test(list.reply)) savedAt = null;
+          if (earlier && !savedAt) why += ' Your earlier checkpoint is gone.';
+        }
+      }
+      const resumed = await leave(true);
+      why = why || resumed;
+      if (!paused) await resync();
+      focus();
+      if (why) { ov.fail('Could not save a checkpoint', why); return false; }
+      ov.done('✓ Checkpoint saved');
+      status('checkpoint saved at ' + hhmm(savedAt));
+      return true;
+    } finally {
+      try { await leave(true); focus(); } finally { busy = false; }
+    }
+  }
+
+  async function rollback() {
+    if (busy || !savedAt) return false;
+    busy = true;
+    // Cleared once `loadvm` is sent, and set again only if it answers
+    // cleanly: after a partial load the disks and memory may not match.
+    let resumable = true;
+    try {
+      // No prompt required, unlike saving: going back is for when a program
+      // has the terminal or the guest is stuck.
+      ov.show('Going back to your checkpoint…');
+      ov.sub('Undoing everything since ' + hhmm(savedAt) + '.');
+      blur();
+      let why = await mux() ? null : NO_ANSWER;
+      if (!why) why = (await run('stop')).why;
+      if (!why) {
+        resumable = false;
+        why = (await run(LOADVM, ms('work', WORK_MS))).why;
+        if (why) why += ' Reload the page to start again.';
+        else resumable = true;
+      }
+      const resumed = await leave(resumable);
+      why = why || resumed;
+      if (why) { ov.fail('Could not go back to your checkpoint', why); return false; }
+      // The checkpoint was taken at a prompt, so there is one to come back to.
+      if (await ensureShell()) await resync();
+      focus();
+      ov.done('✓ Back at your checkpoint');
+      status('back at your checkpoint from ' + hhmm(savedAt));
+      return true;
+    } finally {
+      try { await leave(resumable); focus(); } finally { busy = false; }
+    }
+  }
+
   // ---- browser-side copy -------------------------------------------------
   async function opfsWrite(bin) {
     const root = await navigator.storage.getDirectory();
@@ -441,9 +656,7 @@ const SERIALFS = (() => {
         return false;
       }
       const r = await importWork(bin);
-      // The overlay goes away; the status line stays until the next save, so
-      // a partial restore is still on screen after the user looks back.
-      const status = (m) => { if (typeof window.__sfsStatus === 'function') window.__sfsStatus(m); };
+      // A partial restore stays in the status line after the overlay goes.
       if (r.ok && r.homeOnly) {
         ov.warn('Only your home folder was restored',
                 'This work was saved on a different version of bashtion. Your files are ' +
@@ -457,9 +670,17 @@ const SERIALFS = (() => {
       return false;
     },
     hasSaved: () => opfsRead().then((b) => !!(b && b.length)),
+    // Resolve true or false; the overlay and the status line say what
+    // happened. checkpointTime() is when this page's checkpoint was taken,
+    // or null when there is none to go back to.
+    checkpoint,
+    rollback,
+    checkpointTime: () => savedAt && new Date(savedAt),
     // The page must not paste anything of its own while a transfer owns the
     // console: between blocks the tail looks exactly like an idle prompt, and
-    // the next `head -c N` would swallow the injected text as payload.
+    // the next `head -c N` would swallow the injected text as payload. Nor
+    // while a checkpoint has the mux on the monitor (#65), where it would be
+    // run as a monitor command.
     isBusy: () => busy,
     // exposed for tests
     _cksum: cksum,

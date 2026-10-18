@@ -6,6 +6,11 @@
 // faithfully is the two things the protocol has to survive - readline echoing
 // every command line back before running it, and a command reading the tty
 // directly with echo off - because those are what the bugs were about.
+//
+// In front of it sits QEMU's -nographic mux and, on its other side, the HMP
+// monitor that checkpoints use (#65), answering the way the engine was
+// measured to: a redrawn echo, `Error: <reason>` on failure, and a fresh
+// `(qemu) ` at the end of every reply.
 
 // ---------------------------------------------------------------- fake DOM
 function element(tag) {
@@ -82,6 +87,17 @@ export class FakeGuest {
     this.commands = [];
     this.blocks = 0;
     this.sink = null;
+    // the mux and the monitor (#65)
+    this.focus = 'serial';      // which side of the mux has the keyboard
+    this.escape = false;        // Ctrl-A seen, waiting for the key after it
+    this.monitor = [];          // command lines the monitor was given
+    this.monPending = '';
+    this.trace = [];            // shell lines, monitor lines and switches, in order
+    this.running = true;        // the VM: `stop` pauses it, `cont` resumes it
+    this.layered = false;       // snapshot_blkdev has put a qcow2 over root
+    this.slot = null;           // the `bashtion` snapshot
+    this.hung = false;
+    this.machine = {};          // guest state a test can change, and loadvm puts back
   }
 
   attach(win) {
@@ -101,8 +117,118 @@ export class FakeGuest {
     return () => clearInterval(this.chatter);
   }
 
+  // The mux sees every byte first. Ctrl-A c moves the keyboard to the other
+  // side; Ctrl-A Ctrl-A sends one Ctrl-A on; Ctrl-A followed by anything else
+  // is swallowed, along with that key. So a Ctrl-A inside a bracketed paste
+  // (ESC[200~ ^A ESC[201~) loses the ESC after it, and the `c` that follows
+  // goes to the guest as text: the switch never happens.
   feed(text) {
+    let run = '';
+    const flush = () => {
+      if (!run) return;
+      if (this.focus === 'monitor') this.monitorFeed(run); else this.serialFeed(run);
+      run = '';
+    };
+    for (const ch of text) {
+      if (this.escape) {
+        this.escape = false;
+        if (ch === 'c') { flush(); this.swap(); } else if (ch === '\x01') run += ch;
+        continue;
+      }
+      if (ch === '\x01') { this.escape = true; continue; }
+      run += ch;
+    }
+    flush();
+  }
+
+  swap() {
+    this.focus = this.focus === 'serial' ? 'monitor' : 'serial';
+    this.trace.push(['mux', this.focus]);
+    // the monitor reprints its prompt when it gets the keyboard
+    if (this.focus === 'monitor' && this.answers()) this.write('(qemu) ');
+  }
+
+  answers() { return !this.hung && this.opts.monitorHangs !== true; }
+
+  monitorFeed(text) {
+    this.monPending += text;
+    for (let i; (i = this.monPending.indexOf('\r')) >= 0;) {
+      const line = this.monPending.slice(0, i);
+      this.monPending = this.monPending.slice(i + 1);
+      this.hmp(line);
+    }
+  }
+
+  // The replies measured in the browser engine (QEMU 8.2.0) and in native
+  // QEMU 8.2.2 with the same machine. `monitorHangs` is a monitor that stops
+  // answering at that command (or, given true, never answers at all).
+  hmp(line) {
+    this.monitor.push(line);
+    this.trace.push(['monitor', line]);
+    if (this.opts.monitorHangs === line) this.hung = true;
+    if (!this.answers()) return;
+    // HMP redraws the whole line on every keystroke
+    for (let i = 1; i <= line.length; i++) {
+      this.write(line.slice(0, i) + '\x1b[K' + (i < line.length ? '\x1b[D'.repeat(i) : ''));
+    }
+    this.write('\r\r\n');
+    const say = (s) => this.write(s + '\r\r\n');
+    const fail = (s) => say('Error: ' + s);
+    switch (line) {
+      case 'stop': this.running = false; break;
+      case 'cont': this.running = true; break;
+      case 'snapshot_blkdev root /tmp/bashtion-root.qcow2 qcow2':
+        if (this.opts.layerFails) { fail(this.opts.layerFails); break; }
+        this.layered = true;
+        // a single CR before this LF, unlike every other line (measured)
+        this.write("Formatting '/tmp/bashtion-root.qcow2', fmt=qcow2 cluster_size=65536 " +
+                   'extended_l2=off compression_type=zlib size=1088421888 ' +
+                   'backing_file=/pack-rootfs/rootfs.ext4 backing_fmt=raw lazy_refcounts=off ' +
+                   'refcount_bits=16\r\n');
+        break;
+      case 'savevm bashtion':
+        if (!this.layered) { fail("Device 'root' is writable but does not support snapshots"); break; }
+        if (this.opts.savevmFails) {
+          // savevm deletes the old snapshot of the tag before writing the new
+          // one; whether a failure got that far depends on what failed
+          if (this.opts.savevmDropsOld) this.slot = null;
+          fail(this.opts.savevmFails);
+          break;
+        }
+        this.slot = { machine: structuredClone(this.machine), reader: this.reader,
+                      pending: this.pending, echo: this.echo };
+        break;
+      case 'loadvm bashtion':
+        if (!this.slot) { fail("Snapshot 'bashtion' does not exist in one or more devices"); break; }
+        if (this.opts.loadvmFails) { fail(this.opts.loadvmFails); break; }
+        this.machine = structuredClone(this.slot.machine);
+        this.reader = this.slot.reader;
+        this.pending = this.slot.pending;
+        this.echo = this.slot.echo;
+        break;
+      case 'info snapshots':
+        if (!this.slot) { say('There is no snapshot available.'); break; }
+        say('List of snapshots present on all disks:');
+        say('ID        TAG               VM SIZE                DATE     VM CLOCK     ICOUNT');
+        say('--        bashtion          299 MiB 2026-10-18 00:37:48 00:01:33.419           ');
+        break;
+      default: fail("unknown command: '" + line + "'");
+    }
+    this.write('(qemu) ');
+    // input typed at the serial port while the VM was stopped waits for it
+    if (line === 'cont') this.serialFeed('');
+  }
+
+  // A foreground program that reads the terminal and never gives it back -
+  // `sleep 600` that a key does not end, or a hung command.
+  hold() {
+    this.reader = { need: Infinity, got: '', done() {} };
+    return this.reader;
+  }
+
+  serialFeed(text) {
     this.pending += text;
+    if (!this.running) return;
     for (;;) {
       // ISIG: Ctrl-C interrupts the foreground job wherever it lands. This is
       // the whole mechanism the failure-recovery path depends on - without it
@@ -148,12 +274,13 @@ export class FakeGuest {
   exec(line) {
     if (line.includes('\x15')) line = line.slice(line.lastIndexOf('\x15') + 1);
     this.commands.push(line);
+    this.trace.push(['shell', line]);
     // readline redisplays every command line typed at the prompt, whatever
     // the tty ECHO flag says. This is the echo markers must not match.
     this.write(line + '\r\n');
 
     if (/^\s*$/.test(line)) return this.prompt();
-    if (/^clear$/.test(line)) { this.write('\x1b[H\x1b[2J'); return this.prompt(); }
+    if (/(^|; )clear$/.test(line)) { this.write('\x1b[H\x1b[2J'); return this.prompt(); }
 
     // save
     if (line.includes('bashtion-pack')) {
@@ -257,6 +384,39 @@ export function posixCksum(bytes) {
   for (let i = 0; i < bytes.length; i++) c = ((c << 8) ^ TABLE[((c >>> 24) ^ bytes[i]) & 0xff]) >>> 0;
   for (let n = bytes.length; n; n >>>= 8) c = ((c << 8) ^ TABLE[((c >>> 24) ^ (n & 0xff)) & 0xff]) >>> 0;
   return (~c) >>> 0;
+}
+
+// --------------------------------------------------------------- fake xterm
+// Just what the checkpoint code touches (#65): paste() as xterm.js does it -
+// newlines to CR, and the bracket wrap while the program in front has asked
+// for one - write() with its parser's handling of DECSET/DECRST 2004 and the
+// callback it fires once the data is processed, the grid, and focus. Routes
+// window.__paste through itself, as boot.js does.
+export function makeXterm(win, guest, { cols = 100, rows = 30 } = {}) {
+  const term = {
+    cols, rows,
+    modes: { bracketedPasteMode: false },
+    focused: true,
+    events: [],                 // writes, pastes and focus changes, in order
+    paste(s) {
+      term.events.push(['paste', s]);
+      const t = String(s).replace(/\r?\n/g, '\r');
+      guest.feed(term.modes.bracketedPasteMode ? '\x1b[200~' + t + '\x1b[201~' : t);
+    },
+    write(data, cb) {
+      term.events.push(['write', data]);
+      setTimeout(() => {
+        if (data.includes('\x1b[?2004l')) term.modes.bracketedPasteMode = false;
+        if (data.includes('\x1b[?2004h')) term.modes.bracketedPasteMode = true;
+        if (cb) cb();
+      }, 5);
+    },
+    blur() { term.focused = false; term.events.push(['blur']); },
+    focus() { term.focused = true; term.events.push(['focus']); },
+  };
+  win.__xterm = term;
+  win.__paste = (s) => term.paste(s);
+  return term;
 }
 
 // --------------------------------------------------------------- the whole

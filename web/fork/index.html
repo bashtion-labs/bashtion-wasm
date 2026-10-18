@@ -20,11 +20,15 @@
       deploy/_headers must be relaxed. See deploy/README.md.
     -->
     <div id="status">loading bundles…</div>
-    <div id="controls" style="position:fixed;top:4px;right:8px;font:12px system-ui;color:#9a9a9a">
+    <!-- Opaque, so on a narrow window the bar covers the end of #status
+         rather than printing through it. -->
+    <div id="controls" style="position:fixed;top:4px;right:8px;font:12px system-ui;color:#9a9a9a;background:#111;padding-left:8px">
       <span id="sfsStatus" style="margin-right:8px"></span>
       <button id="exportBtn">Download my work</button>
       <button id="loadBtn">Load work</button>
       <button id="loadFileBtn">Load from a file…</button>
+      <button id="checkpointBtn">Save checkpoint</button>
+      <button id="rollbackBtn" disabled>Go back to checkpoint</button>
       <input type="file" id="importInp" hidden>
     </div>
     <div id="terminal"></div>

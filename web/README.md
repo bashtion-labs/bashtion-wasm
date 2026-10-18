@@ -47,12 +47,15 @@ JS bundle (`out.js`) plus a `.wasm` and a pthread worker.
   knows which side the mux is on. Each reply is read up to the monitor's next `(qemu) `,
   looked for anywhere after the command rather than at the end of the record, since until
   `stop` a program can keep printing after it; an `Error: <reason>` line straight before that
-  prompt is a failure. The commands are constants: `stop`, then
+  prompt is a failure, except in `stop`'s reply, where guest lines can land between the echo
+  and the prompt and which is never read for one (`stop` has nothing to fail on here). The
+  commands are constants: `stop`, then
   `snapshot_blkdev root /tmp/bashtion-root.qcow2 qcow2` at the first checkpoint (`savevm`
   refuses the raw root disk), `savevm bashtion` and `cont` to save, or `stop`,
   `loadvm bashtion` and `cont` to go back, with `info snapshots` after a failed `savevm` to
   see whether the earlier checkpoint survived. `cont` always follows a `stop` that worked,
-  except after a failed `loadvm`, which leaves the VM stopped. Saving needs a shell prompt;
+  except after a failed `loadvm`, which leaves the VM stopped. Saving needs a shell prompt,
+  asked for with an 8 s hard cap so a program that keeps printing cannot hold the overlay up;
   going back does not, since it is for when a program has the terminal or the guest is stuck.
   If that program turned bracketed paste on, the page turns it off with `ESC[?2004l` before
   switching, or `xterm.paste()` would wrap Ctrl-A in `ESC[200~`...`ESC[201~` and the mux

@@ -199,8 +199,10 @@ Wait up to a few minutes on the first start. The system is booting behind the lo
 still blank after that, reload the page.
 
 **I clicked Download my work or Save checkpoint and it says "wait for the $ prompt."**
-The system was not fully ready yet. Wait until you see the `user@bashtion:~$` prompt, then
-click the button again.
+The system was not fully ready yet, or a command was still running. Wait until you see the
+`user@bashtion:~$` prompt, then click the button again. If a command keeps printing and never
+gives the prompt back (like `ping`), click the black screen and press **Ctrl+C** to stop it
+first.
 
 **My typing does nothing.**
 Click once on the black screen first, then type. The page needs to know you are typing there.

@@ -182,8 +182,9 @@ something destructive and getting back. Everything returns: files, installed pac
 settings, whatever is on `/dev/vdb` (partitions, LVM, filesystems), running programs, even the
 terminal size. There is one checkpoint at a time: saving again replaces it, and you can go back
 to it as often as you like. Saving needs the `$` prompt, so that going back lands at one where
-the page can type; going back needs no prompt, because it is for when a program has the
-terminal or the guest is stuck.
+the page can type, and it asks for one for 8 s at most, so a program that keeps printing makes
+it give up rather than wait; going back needs no prompt, because it is for when a program has
+the terminal or the guest is stuck.
 
 It is the snapshot machinery the page already restores from, driven through QEMU's monitor:
 the HMP monitor shares the `-nographic` mux with the serial console, the page already switches
@@ -193,20 +194,21 @@ sends only constant commands, behind the same overlay and busy latch as save/loa
 | Step | Why |
 |---|---|
 | blur the terminal, then Ctrl-A NUL, Ctrl-A c | Switches the mux to the monitor. With the keyboard on the terminal, a key pressed now would reach the monitor, and HMP's `q` quits the engine. If a program has turned bracketed paste on, the page turns it off first: inside `ESC[200~`...`ESC[201~` the mux sees ESC after Ctrl-A and never switches. Ctrl-A NUL clears a Ctrl-A the user left pending (readline's start-of-line key): the mux swallows it whole when nothing is held, and otherwise passes ^A and NUL to the guest instead of letting the page's Ctrl-A complete the user's pair. The monitor's `(qemu) ` is looked for anywhere after the switch, with an 8 s cap: until `stop` the guest still runs, and a program that keeps printing buries the prompt at once. |
-| `stop` | Nothing the guest prints can mix into the later replies, and the disk layer and the snapshot are taken at one instant. A reply has failed when its `Error:` line comes straight before the next `(qemu) `, so a program printing `Error: ...` lines is not mistaken for one. |
+| `stop` | Nothing the guest prints can mix into the later replies, and the disk layer and the snapshot are taken at one instant. Its own reply is not read for an `Error:`: guest bytes, even whole `Error: ...` lines, can land between its echo and its prompt, and `stop` has nothing to fail on here, so its prompt alone means stopped and `cont` will follow. The later replies, typed while the guest is stopped, have failed when an `Error:` line comes straight before the next `(qemu) `. |
 | `snapshot_blkdev root /tmp/bashtion-root.qcow2 qcow2`, at the first checkpoint only | `savevm` refuses the raw root disk ("Device 'root' is writable but does not support snapshots"). This puts a qcow2 layer over it, backed by the raw image. The file is in the engine's Emscripten `/tmp`, not the guest's. Made at the first checkpoint, not at start, so a session that never takes one is unchanged. |
 | `savevm bashtion` | One fixed tag. `savevm` replaces a snapshot with the same tag, one slot bounds the memory, and the replaced snapshot's space is reused. |
 | `cont`, always once `stop` worked | A failed `savevm` leaves the machine as it was, so it carries on. Before that, `info snapshots` decides whether the earlier checkpoint survived: `savevm` deletes the old snapshot of the tag before writing the new one. |
 | Ctrl-A NUL, Ctrl-A c, then one line at the prompt | Back to the console. `sudo date -u -s @<now>; sudo hwclock --systohc; stty rows R cols C; clear` puts right what the guest has wrong: its clock stood still while the VM was stopped (and `loadvm` turns it back to the checkpoint), `loadvm` turns the tty size back too, and `clear` removes the monitor's text. The page reports only once `clear`'s erase is in the console record and a prompt has followed it: when the checkpoint caught bash between two prompts, a stale prompt arrives first and the line runs seconds later. |
 
-Going back is blur, Ctrl-A c, `stop`, `loadvm bashtion`, `cont`, Ctrl-A c, then the same line
-at the prompt. Before that line the page also puts back the terminal modes a running program
+Going back is the same switch (blur, Ctrl-A NUL, Ctrl-A c), `stop`, `loadvm bashtion`, `cont`,
+the switch back, Ctrl-U and Enter for a prompt, then the same line. Before that line the page also puts back the terminal modes a running program
 may have left in xterm, which `loadvm` cannot reach: the cursor `top` hid, colours, application
 cursor keys and keypad, and mouse and focus reporting. If `loadvm` fails or never answers, the
 page does **not** `cont`: after a partial load the disks and memory may not match, and a
 machine running on that can corrupt the work you would then download. It switches back, leaves
 the VM stopped, and says to reload, in the overlay and on the status line. Whatever happens, the
-page leaves the mux on the serial side and gives the keyboard back.
+page leaves the mux where it found it - on the serial side, unless the user had switched to the
+monitor by hand - and gives the keyboard back.
 
 **It lives only in the tab.** The snapshot is inside that qcow2 layer, in the engine's
 in-memory filesystem next to the disks. A reload or a closed tab loses it. Keeping state across

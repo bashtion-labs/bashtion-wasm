@@ -30,6 +30,9 @@ JS bundle (`out.js`) plus a `.wasm` and a pthread worker.
   the cell size from either xterm's renderer: `actualCellWidth`/`actualCellHeight` from
   xterm 4.19.0, which the shipped page (`fork/index.html`) gets from the engine's `vendor/`,
   or `css.cell` from `@xterm/xterm` 5.5.0, which the upstream-lane page (`index.html`) gets.
+  The grid is refit only on a window resize, so `fork/index.html` keeps its control bar in
+  the flow above the terminal, at a height set by the window width alone: the messages never
+  wrap, and on a narrow window the buttons wrap below them.
 - `serialfs.js` — Save/Load of the session. The engine's real filesystem lives in the wasm
   worker where page JavaScript cannot see it, so transfers ride the serial console. What is
   captured is decided guest-side by `/usr/local/sbin/bashtion-{pack,unpack}` (source in

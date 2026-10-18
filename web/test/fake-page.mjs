@@ -169,7 +169,11 @@ export class FakeGuest {
 
   // The replies measured in the browser engine (QEMU 8.2.0) and in native
   // QEMU 8.2.2 with the same machine. `monitorHangs` is a monitor that stops
-  // answering at that command (or, given true, never answers at all).
+  // answering at that command, before running it (or, given true, never
+  // answers at all): `monitorHangs: 'stop'` leaves the VM running.
+  // `stopPromptLost` is a `stop` that runs, but whose closing `(qemu) ` is
+  // lost (true) or comes that many ms late; every other command is answered
+  // as usual.
   hmp(line) {
     this.monitor.push(line);
     this.trace.push(['monitor', line]);
@@ -236,7 +240,9 @@ export class FakeGuest {
         break;
       default: fail("unknown command: '" + line + "'");
     }
-    this.write('(qemu) ');
+    const lost = line === 'stop' && this.opts.stopPromptLost;
+    if (!lost) this.write('(qemu) ');
+    else if (typeof lost === 'number') setTimeout(() => this.write('(qemu) '), lost);
     // input typed at the serial port while the VM was stopped waits for it
     if (line === 'cont') this.serialFeed('');
   }

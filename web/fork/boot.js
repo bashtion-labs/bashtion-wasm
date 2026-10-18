@@ -107,6 +107,10 @@ const hhmm = (d) => String(d.getHours()).padStart(2, '0') + ':' + String(d.getMi
 const syncRollback = () => { rollbackBtn.disabled = !SERIALFS.checkpointTime(); };
 document.getElementById('checkpointBtn').onclick = () => SERIALFS.checkpoint().finally(syncRollback);
 rollbackBtn.onclick = () => {
+  // The button keeps keyboard focus behind the overlay, so Enter can click it
+  // again mid-operation; a confirm() then would stall the page for a question
+  // whose answer rollback() would refuse anyway.
+  if (SERIALFS.isBusy()) return;
   const at = SERIALFS.checkpointTime();
   if (!at || !window.confirm('Go back to the checkpoint you saved at ' + hhmm(at) + '?\n\n' +
       'Everything you did after it is undone: files, settings, installed programs and disks.')) return;

@@ -99,7 +99,8 @@ const SERIALFS = (() => {
 
   // Wait for `re`, giving up only when the guest has gone completely silent.
   // Every byte that arrives - progress output, an echo, anything - resets the
-  // clock, so a transfer that is still moving is never abandoned.
+  // clock, so a transfer that is still moving is never abandoned. `re` may
+  // also be a function, for a question the cleaned text cannot answer.
   const waitFor = (re, from, idleMs, hardMs) => new Promise((resolve) => {
     const started = Date.now();
     const idle = idleMs || ms('idle', IDLE_MS);
@@ -108,7 +109,7 @@ const SERIALFS = (() => {
     let seen = serialLen();
     let moved = started;
     const tick = () => {
-      const m = serialFrom(from).match(re);
+      const m = typeof re === 'function' ? re() : serialFrom(from).match(re);
       if (m) return resolve(m);
       const now = serialLen();
       if (now !== seen) { seen = now; moved = Date.now(); }
@@ -468,29 +469,49 @@ const SERIALFS = (() => {
 
   // Ctrl-A c, typed as boot.js types it. Resolves whether the monitor
   // answered, when this was the switch into it.
+  //
+  // Ctrl-A NUL goes first. A Ctrl-A the user pressed is held by the mux until
+  // the next key (readline's start-of-line habit does it), and the page's
+  // Ctrl-A would complete that pair and go to the guest, its `c` typed into
+  // the shell and the switch never made - after which the switch "back" would
+  // switch in. With nothing held the mux swallows Ctrl-A NUL whole; with a
+  // Ctrl-A held the guest gets ^A and NUL, and the mux holds nothing (both
+  // measured on the served page).
+  //
+  // The monitor's prompt is looked for anywhere after the switch, not only at
+  // the end: the VM runs until `stop`, and the mux interleaves its output with
+  // the monitor's, so a program that keeps printing buries `(qemu) ` at once.
+  // The echo of a command never contains it. And the short wait is the hard
+  // cap as well: output arriving would otherwise keep an idle timer alive for
+  // the 15-minute cap.
   async function mux() {
     const t = window.__xterm;
     if (t && t.modes && t.modes.bracketedPasteMode) {
       await new Promise((r) => t.write('\x1b[?2004l', r));
     }
+    paste('\x01');
+    paste('\x00');
     const t0 = serialLen();
     paste('\x01');
     paste('c');
     switches++;
     if (!(switches % 2)) return true;
-    return !!(await waitFor(/\(qemu\) $/, t0, ms('mux', 8000)));
+    return !!(await waitFor(/\(qemu\) /, t0, ms('mux', 8000), ms('mux', 8000)));
   }
 
   // One monitor command. Every reply ends in a fresh `(qemu) `, which the
-  // monitor's echo of the command never contains, and a failure is one line,
-  // `Error: <reason>`. `cmd` is always one of the constants here: nothing the
-  // user or the guest supplies ever goes into one.
+  // monitor's echo of the command never contains - looked for anywhere after
+  // the command, as in mux(), since around `stop` and `cont` the guest may
+  // still be printing. A failure is the line `Error: <reason>` straight
+  // before that prompt (HMP prints the two together), so a program printing
+  // lines that start `Error: ` is not taken for one. `cmd` is always one of
+  // the constants here: nothing the user or the guest supplies goes into one.
   async function run(cmd, idleMs) {
     const t0 = serialLen();
     paste(cmd + '\n');
-    if (!await waitFor(/\(qemu\) $/, t0, idleMs)) return { why: NO_ANSWER };
+    if (!await waitFor(/\(qemu\) /, t0, idleMs)) return { why: NO_ANSWER };
     const reply = serialFrom(t0);
-    const err = reply.match(/^Error: ([^\r\n]*)/m);
+    const err = reply.match(/(?:^|\n)Error: ([^\r\n]*)\r*\n\(qemu\) /);
     if (err) return { why: sentence(err[1]) };
     if (cmd === 'stop') paused = true;
     if (cmd === 'cont') paused = false;
@@ -530,9 +551,21 @@ const SERIALFS = (() => {
     cmds.push('clear');
     const t0 = serialLen();
     paste(cmds.join('; ') + '\n');
+    // Done once `clear` has run - its erase is in the raw mirror after the
+    // line went out - and a prompt has followed it. A prompt alone is not
+    // enough: when the checkpoint caught bash between prompts, the tty echoes
+    // the line, a stale prompt follows, and the line only runs after that,
+    // seconds later, with the monitor's text still on screen. bootscreen.js's
+    // reveal asks the same of its handover line. The monitor's own redraws
+    // erase with ESC[K, never ESC[J.
+    //
     // Not tidy()'s 8 s: the two sudos print nothing for 8-17 s, and longest
     // straight after a checkpoint (15-17 s, measured).
-    await waitFor(/[$#] ?$/m, t0);
+    await waitFor(() => {
+      const raw = (window.__serial || '').slice(t0);
+      const at = raw.search(/\x1b\[[0-9;]*J/);
+      return at >= 0 && clean(raw.slice(at)).match(/[$#] ?$/m);
+    }, t0);
     await sleep(200);
   }
 
@@ -566,7 +599,11 @@ const SERIALFS = (() => {
           // new one, so a failure can take the earlier checkpoint with it.
           const list = await run('info snapshots');
           if (list.why || !/^\S+\s+bashtion\s/m.test(list.reply)) savedAt = null;
-          if (earlier && !savedAt) why += ' Your earlier checkpoint is gone.';
+          if (earlier && !savedAt) {
+            why += ' Your earlier checkpoint is gone.';
+            // or the status line would still offer the time of one
+            status('your earlier checkpoint is gone');
+          }
         }
       }
       const resumed = await leave(true);
@@ -599,12 +636,26 @@ const SERIALFS = (() => {
       if (!why) {
         resumable = false;
         why = (await run(LOADVM, ms('work', WORK_MS))).why;
-        if (why) why += ' Reload the page to start again.';
-        else resumable = true;
+        if (why) {
+          why += ' Reload the page to start again.';
+          // The overlay goes in 6 s and the machine stays stopped: the one
+          // instruction that matters has to stay on screen.
+          status('could not go back to your checkpoint — reload the page');
+        } else resumable = true;
       }
       const resumed = await leave(resumable);
       why = why || resumed;
       if (why) { ov.fail('Could not go back to your checkpoint', why); return false; }
+      // loadvm put the guest back, but not the page's terminal: a program
+      // that was running (top, say) may have left the cursor hidden, colours
+      // set, or the cursor keys, keypad or mouse in application modes. Put
+      // back the ones a restored prompt expects. These are the modes
+      // SERIALTAP's screen model does not track, so the two cannot disagree.
+      const t = window.__xterm;
+      if (t) {
+        await new Promise((r) => t.write(
+          '\x1b[?25h\x1b[0m\x1b[?1l\x1b>\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l', r));
+      }
       // The checkpoint was taken at a prompt, so there is one to come back to.
       if (await ensureShell()) await resync();
       focus();

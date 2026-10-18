@@ -430,6 +430,8 @@ test('#65 a failed savevm that took the earlier checkpoint with it says so, and 
   assert.equal(p.SERIALFS.checkpointTime(), null);
   assert.equal(findOverlay(p, 'bwOvSub').textContent,
                'Error while writing VM state: No space left on device. Your earlier checkpoint is gone.');
+  // the status line no longer offers the time of a checkpoint that is gone
+  assert.equal(p.status.at(-1), 'your earlier checkpoint is gone');
 });
 
 test('#65 a first checkpoint that fails says nothing about an earlier one', async () => {
@@ -456,6 +458,10 @@ test('#65 a failed loadvm is never followed by cont, and says to reload', async 
     const sub = findOverlay(p, 'bwOvSub').textContent;
     assert.match(sub, /\. Reload the page to start again\.$/);
     assert.doesNotMatch(sub, /nothing was changed/i);
+    // the overlay goes; what to do about the stopped machine stays
+    assert.equal(p.status.at(-1), 'could not go back to your checkpoint — reload the page');
+    // and the page's terminal modes are left alone: nothing came back
+    assert.ok(!p.term.events.some(([k, d]) => k === 'write' && d.includes('\x1b[?25h')));
   }
 });
 
@@ -486,6 +492,75 @@ test('#65 going back works while a program has the terminal', async () => {
   // it stays, so it can be gone back to again
   assert.equal(p.SERIALFS.checkpointTime().getTime(), at.getTime());
   assert.equal(await p.SERIALFS.rollback(), true);
+});
+
+test('#65 going back works while a program keeps printing', async () => {
+  // `yes`, a loop, `ping`: its output buries the monitor's `(qemu) ` the
+  // moment the mux prints it, and keeps every idle timer alive. Its lines
+  // start `Error: `, which must not be read as a monitor failure.
+  const p = machine({ writeDelayMs: 2 });
+  p.win.__bwTimeouts = FAST;
+  assert.equal(await p.SERIALFS.checkpoint(), true);
+  const program = p.guest.spew('Error: y\r\n', 20);
+  try {
+    const from = p.guest.trace.length;
+    assert.equal(await p.SERIALFS.rollback(), true, findOverlay(p, 'bwOvSub').textContent);
+    assert.deepEqual(steps(p, from).slice(0, 5), ['mux: monitor', 'monitor: stop',
+                                                  'monitor: loadvm bashtion', 'monitor: cont',
+                                                  'mux: serial']);
+    assert.equal(program.got, '', 'the page typed into the printing program');
+    assert.equal(p.guest.focus, 'serial');
+  } finally { clearInterval(program.timer); }
+});
+
+test('#65 a Ctrl-A the user left pending in the mux does not turn the switch around', async () => {
+  // Without the Ctrl-A NUL first, the page's Ctrl-A completes the user's
+  // pair and goes to the guest with its `c`, the switch never happens, and
+  // the switch "back" switches in - leaving the user typing into HMP.
+  const p = machine();
+  p.win.__bwTimeouts = FAST;
+  assert.equal(await p.SERIALFS.checkpoint(), true);
+  const program = p.guest.hold();
+  p.win.__paste('\x01');          // readline's start-of-line, held by the mux
+  assert.equal(p.guest.escape, true);
+  assert.equal(await p.SERIALFS.rollback(), true);
+  assert.ok(!program.got.includes('c'), 'the switch key went to the guest: ' + JSON.stringify(program.got));
+  assert.deepEqual(p.guest.monitor.slice(-3), ['stop', 'loadvm bashtion', 'cont']);
+  assert.equal(p.guest.focus, 'serial');
+  assert.equal(p.guest.escape, false);
+  // and with nothing held, the Ctrl-A NUL reaches neither side
+  const before = p.guest.trace.length;
+  assert.equal(await p.SERIALFS.checkpoint(), true);
+  assert.deepEqual(steps(p, before), ['shell: ', 'mux: monitor', 'monitor: stop',
+                                      'monitor: savevm bashtion', 'monitor: cont', 'mux: serial',
+                                      'shell: re-sync']);
+});
+
+test('#65 the re-sync is done only once its clear has run, not at a stale prompt', async () => {
+  // a checkpoint taken between two of bash's prompts: the first line after
+  // `cont` is echoed and followed by a prompt, and runs only later
+  const p = machine({ betweenPrompts: 600 });
+  assert.equal(await p.SERIALFS.checkpoint(), true);
+  assert.equal(steps(p).at(-1), 'shell: re-sync', 'reported before the re-sync ran');
+  assert.equal(findOverlay(p, 'bwOvTitle').textContent, '✓ Checkpoint saved');
+  assert.match(p.guest.payloadSeen(), /\x1b\[H\x1b\[2Juser@bashtion:~\$ $/);
+});
+
+test('#65 going back puts back the terminal modes a program left behind', async () => {
+  const p = machine();
+  assert.equal(await p.SERIALFS.checkpoint(), true);
+  p.term.events.length = 0;
+  assert.equal(await p.SERIALFS.rollback(), true);
+  const ev = p.term.events;
+  const loaded = ev.findIndex(([k, d]) => k === 'paste' && d === 'loadvm bashtion\n');
+  const reset = ev.findIndex(([k, d]) => k === 'write' && d.includes('\x1b[?25h'));
+  const resync = ev.findIndex(([k, d]) => k === 'paste' && /^sudo date/.test(d));
+  assert.ok(loaded >= 0 && reset > loaded && reset < resync,
+            'cursor, colours and input modes not put back between loadvm and the re-sync');
+  for (const m of ['\x1b[?25h', '\x1b[0m', '\x1b[?1l', '\x1b>', '\x1b[?1000l', '\x1b[?1002l',
+                   '\x1b[?1003l', '\x1b[?1006l', '\x1b[?1004l']) {
+    assert.ok(ev[reset][1].includes(m), JSON.stringify(m) + ' missing');
+  }
 });
 
 test('#65 the re-sync line carries the time and the grid, and goes to the shell', async () => {

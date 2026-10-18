@@ -108,7 +108,15 @@ export class FakeGuest {
     return win;
   }
 
-  write(s) { this.out.push(s); if (this.sink) this.sink(); }
+  // `writeDelayMs`: the engine's console reaches the page asynchronously, so
+  // a program that keeps printing can land its output after a reply the page
+  // is looking for. Equal delays keep the order.
+  write(s) {
+    if (this.opts.writeDelayMs) setTimeout(() => this.put(s), this.opts.writeDelayMs);
+    else this.put(s);
+  }
+
+  put(s) { this.out.push(s); if (this.sink) this.sink(); }
 
   // Simulate `dmesg -w &` or a cron job: unrelated output that keeps the
   // console mirror growing while the transfer itself is wedged.
@@ -167,6 +175,8 @@ export class FakeGuest {
     this.trace.push(['monitor', line]);
     if (this.opts.monitorHangs === line) this.hung = true;
     if (!this.answers()) return;
+    // a printing program's line already on its way when `stop` lands
+    if (line === 'stop' && this.reader && this.reader.line) this.write(this.reader.line);
     // HMP redraws the whole line on every keystroke
     for (let i = 1; i <= line.length; i++) {
       this.write(line.slice(0, i) + '\x1b[K' + (i < line.length ? '\x1b[D'.repeat(i) : ''));
@@ -176,7 +186,10 @@ export class FakeGuest {
     const fail = (s) => say('Error: ' + s);
     switch (line) {
       case 'stop': this.running = false; break;
-      case 'cont': this.running = true; break;
+      case 'cont':
+        this.running = true;
+        if (this.opts.betweenPrompts) this.lagging = this.opts.betweenPrompts;
+        break;
       case 'snapshot_blkdev root /tmp/bashtion-root.qcow2 qcow2':
         if (this.opts.layerFails) { fail(this.opts.layerFails); break; }
         this.layered = true;
@@ -226,6 +239,16 @@ export class FakeGuest {
     return this.reader;
   }
 
+  // One that also prints `line` without pause - `yes`, a loop, `ping` - while
+  // the VM runs. It falls silent while the VM is stopped, and is gone once
+  // loadvm puts back a guest that never started it. Clear `.timer` after.
+  spew(line, everyMs = 20) {
+    const r = this.hold();
+    r.line = line;
+    r.timer = setInterval(() => { if (this.reader === r && this.running) this.write(line); }, everyMs);
+    return r;
+  }
+
   serialFeed(text) {
     this.pending += text;
     if (!this.running) return;
@@ -273,6 +296,19 @@ export class FakeGuest {
 
   exec(line) {
     if (line.includes('\x15')) line = line.slice(line.lastIndexOf('\x15') + 1);
+    // `betweenPrompts`: the checkpoint caught bash between two prompts, so the
+    // first line after `cont` arrives before readline is reading. The tty
+    // echoes it, the prompt bash was about to print follows, and only then
+    // does readline take the line, echo it again and run it (seen on the
+    // served page).
+    if (this.lagging) {
+      const lag = this.lagging;
+      this.lagging = 0;
+      this.write(line + '\r\n');
+      this.prompt();
+      setTimeout(() => this.exec(line), lag);
+      return;
+    }
     this.commands.push(line);
     this.trace.push(['shell', line]);
     // readline redisplays every command line typed at the prompt, whatever

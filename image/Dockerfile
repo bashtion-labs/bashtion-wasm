@@ -167,16 +167,50 @@ RUN set -e; tar -C /seed -cf - . | tar -C /rootfs -xf -; \
               /rootfs/usr/local/lib/bashtion/state.py; \
     chroot /rootfs python3 -c 'import py_compile; py_compile.compile("/usr/local/lib/bashtion/state.py", doraise=True)'; \
     rm -rf /rootfs/usr/local/lib/bashtion/__pycache__
+# Accounts. root used to have the password `root` (#62), set here and told to
+# nobody; stock Ubuntu ships root locked, and now so does this. No password is
+# set before the lock: locking only puts a "!" in front of the hash, so
+# `passwd -u root` would bring `root` straight back. Locking the bare "*" that
+# base-passwd leaves gives "!*", stock Ubuntu's state, with no password behind
+# it (measured on 26.04). root's password was never a way back in: the serial
+# console autologs in as user, a restored session never boots, and `sudo -i`
+# still reaches root - as does `sudo su`, which pam_rootok lets through without
+# asking. The one tradeoff: a development boot that falls into emergency mode
+# gets no sulogin shell, because sulogin refuses a locked root; boot with
+# init=/bin/sh on the kernel command line to get in.
+#
+# sudo stays passwordless, by choice. The page's "Download my work", "Load
+# work" and clock setting type sudo commands on the console and cannot answer
+# a password prompt, so requiring one breaks saving and loading. A password
+# with NOPASSWD for just those commands would gate nothing: bashtion-unpack
+# writes /etc from an archive the user supplies, so it is as good as root. The
+# people this is for have never used Linux, and nothing done in the tab leaves
+# it. The sudoers file says why itself. In sudoers a "#" followed by digits is
+# a user ID, not a comment - a line "#62 ..." is a syntax error in sudo-rs and
+# sudo.ws alike (measured) - so the build checks the result with the guest's
+# own visudo: sudo-rs, the implementation that reads the policy at runtime.
 RUN set -e; \
     echo bashtion > /rootfs/etc/hostname; \
     printf '127.0.0.1\tlocalhost\n127.0.1.1\tbashtion\n' > /rootfs/etc/hosts; \
     head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n' > /rootfs/etc/machine-id; \
     echo >> /rootfs/etc/machine-id; \
     chroot /rootfs useradd -m -s /bin/bash -G sudo -u 1000 user; \
-    printf 'user ALL=(ALL) NOPASSWD:ALL\n' > /rootfs/etc/sudoers.d/user; \
+    printf '%s\n' \
+      '# bashtion: sudo asks for no password here, on purpose (#62). A stock Ubuntu' \
+      '# system asks for your own password. But on this page "Download my work",' \
+      '# "Load work" and the clock setting run sudo on the console and cannot' \
+      '# answer a prompt, so requiring a password here breaks saving and loading.' \
+      '# root is locked: `sudo -i` gives a root shell.' \
+      'user ALL=(ALL) NOPASSWD:ALL' \
+      > /rootfs/etc/sudoers.d/user; \
     chmod 440 /rootfs/etc/sudoers.d/user; \
     echo 'user:changeme' | chroot /rootfs chpasswd; \
-    echo 'root:root' | chroot /rootfs chpasswd
+    chroot /rootfs passwd -l root; \
+    chroot /rootfs visudo -c || { echo "FATAL: visudo rejects the sudoers policy"; exit 1; }; \
+    st=$(chroot /rootfs passwd -S root); echo "$st"; \
+    [ "$(echo "$st" | cut -d' ' -f2)" = L ] || { echo "FATAL: root is not locked"; exit 1; }; \
+    case "$(chroot /rootfs getent shadow root | cut -d: -f2)" in \
+      *'$'*) echo "FATAL: a password hash sits behind root's lock"; exit 1;; esac
 # Stock Ubuntu puts the first user in adm; without it journalctl exits 1 and,
 # piped into anything, the permission error goes to stderr while the pipeline
 # prints a completely believable "0". Nothing on screen contradicts it.
@@ -506,9 +540,10 @@ RUN set -e; \
 # The one screen everyone sees. The boot screen clears the console and prints
 # this before handing over, so the things that are otherwise undiscoverable -
 # no network by design, a spare disk nobody mentions, a file-size cap nobody
-# would guess at, work that is not saved unless you save it - are stated
-# once, up front. (Lines carrying the size are double-quoted, and so must not
-# contain backticks.)
+# would guess at, work that is not saved unless you save it, a sudo that asks
+# for no password and a root that is locked (#62) - are stated once, up front.
+# (Lines carrying the size are double-quoted, and so must not contain
+# backticks.)
 RUN set -e; rm -f /rootfs/etc/motd; printf '%s\n' \
       '' \
       '  bashtion - a real Linux system, running in your browser tab.' \
@@ -525,6 +560,9 @@ RUN set -e; rm -f /rootfs/etc/motd; printf '%s\n' \
       '            for one shell (sudo starts a new one: lift it in `sudo -i`).' \
       '  Saving    Nothing is saved automatically. Use "Download my work"' \
       '            before you close the tab. /dev/vdb is never saved.' \
+      '  Admin     `sudo` asks for no password here, by design: a stock Ubuntu' \
+      '            system asks for yours. root is locked, so `su` will not work:' \
+      '            `sudo -i` gives you a root shell.' \
       '  Docs      Manual pages are installed: try `man man` or `man -k disk`.' \
       '' \
       > /rootfs/etc/motd; \

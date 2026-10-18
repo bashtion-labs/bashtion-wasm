@@ -7,7 +7,8 @@ it: an empty offline apt index, an apt that spent minutes retrying a mirror it
 could never reach and then reported success, no man pages, a root filesystem
 95% full, a failed fallocate that still filled it and a save that could not
 run once it had, a user outside adm, a half-configured network, a firewall
-that reported rules it had not loaded, and a clock running at 0.4x wall time.
+that reported rules it had not loaded, a root account whose password was
+`root`, and a clock running at 0.4x wall time.
 Build-time assertions cover the parts that are visible in the rootfs; these
 cover the parts that are only true once the kernel is running.
 
@@ -331,6 +332,30 @@ def run_checks(con):
     rc, out = capture(con, 'journalctl -n 5 --no-pager | wc -l', 180)
     check('#59 journalctl works unprivileged and piped',
           rc == 0 and out.strip().isdigit() and int(out.strip()) > 0, out)
+
+    # ---- #62 root is locked; sudo asks for no password, by choice --------
+    # root had the password `root`, set at build time and told to nobody,
+    # where stock Ubuntu ships it locked
+    rc, out = capture(con, 'sudo passwd -S root')
+    check('#62 root is locked', out.split()[:2] == ['root', 'L'], out)
+    # A lock only puts "!" in front of the hash, and `passwd -u` takes it off
+    # again: the field must hold no hash at all
+    rc, out = capture(con, 'sudo getent shadow root | cut -d: -f2')
+    check('#62 ...with no password behind the lock',
+          out.startswith('!') and '$' not in out, out)
+    # The page's save, load and clock type sudo on the console and cannot
+    # answer a prompt. -n fails rather than asks, so a policy that wants a
+    # password fails this check instead of wedging the console.
+    rc, out = capture(con, 'sudo -n true')
+    check('#62 sudo asks for no password, by choice', rc == 0, out)
+    # deliberate, so the file the rule lives in says why
+    rc, out = capture(con, 'sudo grep -c bashtion /etc/sudoers.d/user')
+    check('#62 the sudoers rule says why',
+          out.strip().isdigit() and int(out.strip()) >= 1, out)
+    # and so does the one screen everyone sees
+    rc, out = capture(con, "grep -qF 'no password' /etc/motd && "
+                           "grep -qF 'root is locked' /etc/motd")
+    check('#62 the motd says so', rc == 0, out)
 
     # ---- #52 the clock ---------------------------------------------------
     rc, out = capture(con, 'cat /sys/devices/system/clocksource/clocksource0/current_clocksource')

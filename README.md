@@ -22,7 +22,8 @@ The requirement that drives every decision here is **full system-administration 
 - netfilter, so `iptables`, `nft` and `ufw` function
 - 9p/virtio, for a host share the guest can mount (`~/share`; unused in the browser,
   where save/restore rides the serial console instead)
-- an unprivileged user with `sudo`, where privileged operations genuinely fail without it
+- an unprivileged user with `sudo`, where privileged operations genuinely fail without it;
+  `sudo` asks for no password, by choice, and `root` is locked, as on stock Ubuntu (#62)
 
 Every one of these lives in the Linux kernel. That rules out the browser-Linux projects that
 emulate syscalls in userspace rather than running a kernel.

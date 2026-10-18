@@ -788,26 +788,41 @@ test('#65 the cont after a stop that never answers is sent once and waits only b
   // A `stop` that never ran leaves the guest running, and what it prints
   // would keep an idle timer alive for the 15-minute cap: only the short cap
   // ends the wait. Here the monitor hangs before `stop`, so `cont` goes
-  // unanswered too, and the chatter starts as it is sent.
+  // unanswered too, and the chatter starts as it is sent. `stale`: an earlier
+  // Save's `cont` ran but its prompt was lost, so the page still thinks the
+  // machine is stopped from then, and must not give this `cont` the long wait.
   for (const op of ['save', 'back']) {
-    const p = machine();
-    if (op === 'back') assert.equal(await p.SERIALFS.checkpoint(), true, op);
-    p.guest.opts.monitorHangs = 'stop';
-    p.win.__bwTimeouts = { ...FAST, hard: 60000, hardWork: 60000 };
-    let chatter = null;
-    const hmp = p.guest.hmp.bind(p.guest);
-    p.guest.hmp = (line) => { if (line === 'cont' && !chatter) chatter = p.guest.startChatter(); hmp(line); };
-    const from = p.guest.monitor.length;
-    let late;
-    try {
-      const ok = await Promise.race([
-        op === 'save' ? p.SERIALFS.checkpoint() : p.SERIALFS.rollback(),
-        new Promise((_, rej) => { late = setTimeout(
-          () => rej(new Error(op + ' was still waiting for cont after 5 s')), 5000); }),
-      ]);
-      assert.equal(ok, false, op);
-      assert.deepEqual(p.guest.monitor.slice(from), ['stop', 'cont'], op);
-    } finally { if (chatter) chatter(); clearTimeout(late); }
+    for (const stale of [false, true]) {
+      const what = op + (stale ? ' (after a cont that never answered)' : '');
+      const p = machine();
+      const hmp = p.guest.hmp.bind(p.guest);
+      if (stale) {
+        p.win.__bwTimeouts = FAST;
+        const write = p.guest.write.bind(p.guest);
+        p.guest.hmp = (line) => {
+          p.guest.write = (s) => { if (line !== 'cont' || s !== '(qemu) ') write(s); };
+          try { hmp(line); } finally { p.guest.write = write; }
+        };
+        // it fails, but savevm answered: there is a checkpoint to go back to
+        assert.equal(await p.SERIALFS.checkpoint(), false, what);
+        assert.equal(p.guest.running, true, what);
+      } else if (op === 'back') assert.equal(await p.SERIALFS.checkpoint(), true, what);
+      p.guest.opts.monitorHangs = 'stop';
+      p.win.__bwTimeouts = { ...FAST, hard: 60000, hardWork: 60000 };
+      let chatter = null;
+      p.guest.hmp = (line) => { if (line === 'cont' && !chatter) chatter = p.guest.startChatter(); hmp(line); };
+      const from = p.guest.monitor.length;
+      let late;
+      try {
+        const ok = await Promise.race([
+          op === 'save' ? p.SERIALFS.checkpoint() : p.SERIALFS.rollback(),
+          new Promise((_, rej) => { late = setTimeout(
+            () => rej(new Error(what + ' was still waiting for cont after 5 s')), 5000); }),
+        ]);
+        assert.equal(ok, false, what);
+        assert.deepEqual(p.guest.monitor.slice(from), ['stop', 'cont'], what);
+      } finally { if (chatter) chatter(); clearTimeout(late); }
+    }
   }
 });
 

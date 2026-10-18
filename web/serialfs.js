@@ -549,14 +549,15 @@ const SERIALFS = (() => {
   // never answered, and may. Resolves why `cont` failed, or null. `unanswered`
   // is cleared before the short `cont` goes, so that is tried once, answered
   // or not, even if its paste throws, and never carries into the next
-  // operation.
+  // operation. It is tested before `paused`, which an earlier `cont` that
+  // never answered leaves set: that would give this one the long wait.
   async function leave(resume) {
     if (!(switches % 2)) return null;
     const short = unanswered;
     unanswered = false;
     let why = null;
-    if (paused && resume) why = (await run('cont')).why;
-    else if (short && resume) why = (await run('cont', ms('mux', 8000), ms('mux', 8000))).why;
+    if (short && resume) why = (await run('cont', ms('mux', 8000), ms('mux', 8000))).why;
+    else if (paused && resume) why = (await run('cont')).why;
     await mux();
     return why;
   }

@@ -145,8 +145,8 @@ RUN KVER=$(cat /kver); chroot /rootfs depmod "$KVER" && du -sh /rootfs/lib/modul
 # hard assertions: every module a required capability depends on must exist as
 # a .ko for this kernel or be built in - a miss fails the build, not the user.
 RUN KVER=$(cat /kver); ok=1; \
-    for m in dm_mod dm_snapshot dm_mirror dm_thin_pool quota_v2 quota_tree \
-             9p 9pnet_virtio ip_tables iptable_filter nf_conntrack \
+    for m in dm_mod dm_snapshot dm_mirror dm_thin_pool dm_crypt quota_v2 quota_tree \
+             algif_skcipher 9p 9pnet_virtio ip_tables iptable_filter nf_conntrack \
              nf_tables nft_compat xt_conntrack xt_limit xt_tcpudp xt_addrtype \
              ipt_REJECT ip6t_rt xt_hl overlay virtio_blk virtio_pci; do \
       if modinfo -b /rootfs -k "$KVER" "$m" >/dev/null 2>&1; then continue; fi; \
@@ -167,16 +167,50 @@ RUN set -e; tar -C /seed -cf - . | tar -C /rootfs -xf -; \
               /rootfs/usr/local/lib/bashtion/state.py; \
     chroot /rootfs python3 -c 'import py_compile; py_compile.compile("/usr/local/lib/bashtion/state.py", doraise=True)'; \
     rm -rf /rootfs/usr/local/lib/bashtion/__pycache__
+# Accounts. root used to have the password `root` (#62), set here and told to
+# nobody; stock Ubuntu ships root locked, and now so does this. No password is
+# set before the lock: locking only puts a "!" in front of the hash, so
+# `passwd -u root` would bring `root` straight back. Locking the bare "*" that
+# base-passwd leaves gives "!*", stock Ubuntu's state, with no password behind
+# it (measured on 26.04). root's password was never a way back in: the serial
+# console autologs in as user, a restored session never boots, and `sudo -i`
+# still reaches root - as does `sudo su`, which pam_rootok lets through without
+# asking. The one tradeoff: a development boot that falls into emergency mode
+# gets no sulogin shell, because sulogin refuses a locked root; boot with
+# init=/bin/sh on the kernel command line to get in.
+#
+# sudo stays passwordless, by choice. The page's "Download my work", "Load
+# work" and clock setting type sudo commands on the console and cannot answer
+# a password prompt, so requiring one breaks saving and loading. A password
+# with NOPASSWD for just those commands would gate nothing: bashtion-unpack
+# writes /etc from an archive the user supplies, so it is as good as root. The
+# people this is for have never used Linux, and nothing done in the tab leaves
+# it. The sudoers file says why itself. In sudoers a "#" followed by digits is
+# a user ID, not a comment - a line "#62 ..." is a syntax error in sudo-rs and
+# sudo.ws alike (measured) - so the build checks the result with the guest's
+# own visudo: sudo-rs, the implementation that reads the policy at runtime.
 RUN set -e; \
     echo bashtion > /rootfs/etc/hostname; \
     printf '127.0.0.1\tlocalhost\n127.0.1.1\tbashtion\n' > /rootfs/etc/hosts; \
     head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n' > /rootfs/etc/machine-id; \
     echo >> /rootfs/etc/machine-id; \
     chroot /rootfs useradd -m -s /bin/bash -G sudo -u 1000 user; \
-    printf 'user ALL=(ALL) NOPASSWD:ALL\n' > /rootfs/etc/sudoers.d/user; \
+    printf '%s\n' \
+      '# bashtion: sudo asks for no password here, on purpose (#62). A stock Ubuntu' \
+      '# system asks for your own password. But on this page "Download my work",' \
+      '# "Load work" and the clock setting run sudo on the console and cannot' \
+      '# answer a prompt, so requiring a password here breaks saving and loading.' \
+      '# root is locked: `sudo -i` gives a root shell.' \
+      'user ALL=(ALL) NOPASSWD:ALL' \
+      > /rootfs/etc/sudoers.d/user; \
     chmod 440 /rootfs/etc/sudoers.d/user; \
     echo 'user:changeme' | chroot /rootfs chpasswd; \
-    echo 'root:root' | chroot /rootfs chpasswd
+    chroot /rootfs passwd -l root; \
+    chroot /rootfs visudo -c || { echo "FATAL: visudo rejects the sudoers policy"; exit 1; }; \
+    st=$(chroot /rootfs passwd -S root); echo "$st"; \
+    [ "$(echo "$st" | cut -d' ' -f2)" = L ] || { echo "FATAL: root is not locked"; exit 1; }; \
+    case "$(chroot /rootfs getent shadow root | cut -d: -f2)" in \
+      *'$'*) echo "FATAL: a password hash sits behind root's lock"; exit 1;; esac
 # Stock Ubuntu puts the first user in adm; without it journalctl exits 1 and,
 # piped into anything, the permission error goes to stderr while the pipeline
 # prints a completely believable "0". Nothing on screen contradicts it.
@@ -323,6 +357,17 @@ RUN set -e; mkdir -p /rootfs/srv/apt; \
 # gzip the pipeline still exited 0 - so the image shipped a 20-byte empty
 # gzip and apt could not see a single one of the .debs sitting next to it.
 # Scan to a file, ASSERT the index covers every .deb, and only then compress.
+#
+# Then make the repo apt's ONLY source (#56). mmdebstrap writes its mirror into
+# sources.list and every --aptopt into 99mmdebstrap, so the guest shipped with
+# the snapshot mirror, ~220 MB of indexes and caches built from it, and the
+# build's Acquire::Retries "5": `apt install` of any Ubuntu package retried a
+# mirror it could never reach, and `apt update` ended "All packages are up to
+# date." with exit 0. The kernel and the repo download above are the last
+# users of the mirror. The retries line is deleted, not overridden: apt reads
+# apt.conf.d in name order, the last value wins, and 99mmdebstrap sorts after
+# every 9x-bashtion name. The update below then proves a local-only update
+# exits 0 under Error-Mode any, and the build asserts the result.
 RUN set -e; \
     ( cd /rootfs/srv/apt && dpkg-scanpackages . /dev/null > /tmp/Packages ); \
     debs=$(find /rootfs/srv/apt -name '*.deb' | wc -l | tr -d ' '); \
@@ -337,8 +382,34 @@ RUN set -e; \
       { echo "FATAL: Packages.gz is empty"; exit 1; }; \
     printf 'deb [trusted=yes] file:/srv/apt ./\n' > /rootfs/etc/apt/sources.list.d/local.list; \
     rm -f /rootfs/etc/apt/sources.list.d/ubuntu.sources; \
+    printf '%s\n' \
+      '# bashtion has no network, so no mirror is listed and nothing here is' \
+      "# misconfigured. apt's one source is the offline repository in /srv/apt" \
+      '# (/etc/apt/sources.list.d/local.list). A package that is not in it fails' \
+      '# at once. See /etc/motd.' \
+      > /rootfs/etc/apt/sources.list; \
+    chmod 644 /rootfs/etc/apt/sources.list; \
+    sed -i '/^Acquire::Retries /d' /rootfs/etc/apt/apt.conf.d/99mmdebstrap; \
+    printf '%s\n' \
+      '// bashtion: apt has no network, so it must fail fast and say so (#56).' \
+      '// No retries: each one only waits longer (1+2+4+8+16 s) for a fetch that' \
+      '// cannot succeed. And an index apt could not fetch makes `apt update`' \
+      '// fail, rather than warn and exit 0 as if it had worked - which matters' \
+      '// as soon as a mirror is added to the sources.' \
+      'Acquire::Retries "0";' \
+      'APT::Update::Error-Mode "any";' \
+      > /rootfs/etc/apt/apt.conf.d/90-bashtion-offline; \
+    chmod 644 /rootfs/etc/apt/apt.conf.d/90-bashtion-offline; \
     rm -rf /rootfs/var/lib/apt/lists/* /rootfs/var/cache/apt/*.bin; \
-    chroot /rootfs apt-get update
+    chroot /rootfs apt-get update; \
+    uris=$(chroot /rootfs apt-get indextargets --no-release-info --format '$(URI)'); \
+    printf 'apt index target: %s\n' $uris; \
+    [ -n "$uris" ] && ! printf '%s\n' "$uris" | grep -qv '^file:/srv/apt/' || \
+      { echo "FATAL: apt has a source other than the offline repository"; exit 1; }; \
+    cfg=$(chroot /rootfs apt-config shell R Acquire::Retries E APT::Update::Error-Mode); \
+    echo "apt config:" $cfg; \
+    printf '%s\n' "$cfg" | grep -qx "R='0'" && printf '%s\n' "$cfg" | grep -qx "E='any'" || \
+      { echo "FATAL: apt retries, or reports a failed fetch as success"; exit 1; }
 # apt must actually offer every package sitting in the repo from the local
 # origin - the symptom being fixed was `apt install tree` falling through to
 # the network with the .deb in the repo apt had just consulted. Packages that
@@ -469,16 +540,17 @@ RUN set -e; \
 # The one screen everyone sees. The boot screen clears the console and prints
 # this before handing over, so the things that are otherwise undiscoverable -
 # no network by design, a spare disk nobody mentions, a file-size cap nobody
-# would guess at, work that is not saved unless you save it - are stated
-# once, up front. (Lines carrying the size are double-quoted, and so must not
-# contain backticks.)
+# would guess at, work that is not saved unless you save it, a sudo that asks
+# for no password and a root that is locked (#62) - are stated once, up front.
+# (Lines carrying the size are double-quoted, and so must not contain
+# backticks.)
 RUN set -e; rm -f /rootfs/etc/motd; printf '%s\n' \
       '' \
       '  bashtion - a real Linux system, running in your browser tab.' \
       '' \
       '  Network   None, by design. Loopback works (ping 127.0.0.1); nothing' \
-      '            outside this VM is reachable. `apt install` is served from' \
-      '            the offline repository in /srv/apt.' \
+      '            else does. `apt install` can install only the packages in' \
+      '            the offline repository /srv/apt: `ls /srv/apt` lists them.' \
       '  Storage   / has limited room: `df -h /` shows what is left. /dev/vdb' \
       "            is a spare ${VDB_GIB} GiB disk, empty and unpartitioned: practise" \
       '            partitioning, LVM and quotas on it, but do not fill it - what' \
@@ -488,6 +560,9 @@ RUN set -e; rm -f /rootfs/etc/motd; printf '%s\n' \
       '            for one shell (sudo starts a new one: lift it in `sudo -i`).' \
       '  Saving    Nothing is saved automatically. Use "Download my work"' \
       '            before you close the tab. /dev/vdb is never saved.' \
+      '  Admin     `sudo` asks for no password here, by design: a stock Ubuntu' \
+      '            system asks for yours. root is locked, so `su` will not work:' \
+      '            `sudo -i` gives you a root shell.' \
       '  Docs      Manual pages are installed: try `man man` or `man -k disk`.' \
       '' \
       > /rootfs/etc/motd; \

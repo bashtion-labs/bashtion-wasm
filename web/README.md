@@ -26,7 +26,13 @@ JS bundle (`out.js`) plus a `.wasm` and a pthread worker.
   decoding each chunk separately replaced every multi-byte sequence that straddled a
   boundary with U+FFFD.
 - `termfit.js` — sizes the xterm grid to the window and produces the `stty rows R cols C`
-  the guest has to be told, since a serial console carries no window-size signal.
+  the guest has to be told, since a serial console carries no window-size signal. It reads
+  the cell size from either xterm's renderer: `actualCellWidth`/`actualCellHeight` from
+  xterm 4.19.0, which the shipped page (`fork/index.html`) gets from the engine's `vendor/`,
+  or `css.cell` from `@xterm/xterm` 5.5.0, which the upstream-lane page (`index.html`) gets.
+  The grid is refit only on a window resize, so `fork/index.html` keeps its control bar in
+  the flow above the terminal, at a height set by the window width alone: the messages never
+  wrap, and on a narrow window the buttons wrap below them.
 - `serialfs.js` — Save/Load of the session. The engine's real filesystem lives in the wasm
   worker where page JavaScript cannot see it, so transfers ride the serial console. What is
   captured is decided guest-side by `/usr/local/sbin/bashtion-{pack,unpack}` (source in
@@ -34,11 +40,54 @@ JS bundle (`out.js`) plus a `.wasm` and a pthread worker.
   goes through readline (which echoes and redisplays every line typed at a prompt whatever
   `stty -echo` says), and no marker may appear literally in the command line that emits it,
   or it matches its own echo. Blocks are acknowledged one at a time, and both directions
-  carry a byte count and a POSIX `cksum`. Behind a progress overlay. The last line
-  `bashtion-unpack` prints comes back either way: on failure it is the reason, and on
-  success it says whether the whole session was restored or - for an archive from a
-  different image build - the home directory only, which the page reports as such.
-- `toolchain-extra.dockerfile` — layers xterm-pty into the engine's build image.
+  carry a byte count and a POSIX `cksum`. Behind a progress overlay. A transfer starts only
+  once a shell prompt answers, asked for with an 8 s hard cap so that a program that keeps
+  printing cannot hold the overlay up. The last line `bashtion-unpack` prints comes back
+  either way: on failure it is the reason, and on success it says whether the whole session
+  was restored or - for an archive from a different image build - the home directory only,
+  which the page reports as such.
+
+  It also takes checkpoints of the whole machine and goes back to them (#65), through QEMU's
+  HMP monitor on the other side of the `-nographic` mux rather than through the shell, behind
+  the same overlay and busy latch. It switches with Ctrl-A c (blurring the terminal first, so
+  no key the user presses reaches the monitor), preceded by Ctrl-A NUL so that a Ctrl-A the
+  user left pending in the mux cannot swallow the switch, and counts its switches so it always
+  knows which side the mux is on. Each reply is read up to the monitor's next `(qemu) `,
+  looked for anywhere after the command rather than at the end of the record, since until
+  `stop` a program can keep printing after it; an `Error: <reason>` line straight before that
+  prompt is a failure, except in `stop`'s reply, where guest lines can land between the echo
+  and the prompt and which is never read for one (`stop` has nothing to fail on here). The
+  commands are constants: `stop`, then
+  `snapshot_blkdev root /tmp/bashtion-root.qcow2 qcow2` at the first checkpoint (`savevm`
+  refuses the raw root disk), `savevm bashtion` and `cont` to save, or `stop`,
+  `loadvm bashtion` and `cont` to go back, with `info snapshots` after a failed `savevm` to
+  see whether the earlier checkpoint survived. `cont` always follows a `stop` that worked,
+  except after a failed `loadvm`, which leaves the VM stopped. A `stop` that never answered
+  may have stopped the VM anyway (QEMU runs it on reading the line), and `cont` is harmless on
+  a running guest, so one `cont` follows it too, waited for 8 s at most and never retried;
+  none is sent once `loadvm` was. Saving needs a shell prompt, asked for with the same 8 s cap
+  so a program that keeps printing cannot hold the overlay up; going back does not, since it
+  is for when a program has the terminal or the guest is stuck.
+  If that program turned bracketed paste on, the page turns it off with `ESC[?2004l` before
+  switching, or `xterm.paste()` would wrap Ctrl-A in `ESC[200~`...`ESC[201~` and the mux
+  would never see it. After going back it also writes xterm the modes a running program may
+  have left there (cursor shown, colours, cursor keys, keypad, mouse and focus reporting) -
+  only ones the screen model does not track, so the two cannot disagree. Back on the serial
+  side it types one line at the prompt - `sudo date`, `sudo hwclock --systohc`, `stty` for the
+  current grid, `clear` - because the guest clock stood still while the VM was stopped and
+  `loadvm` turns the clock and the tty size back, and it is done only once `clear`'s erase is
+  in `window.__serial` and a prompt has followed: a checkpoint taken between two of bash's
+  prompts gives back a stale prompt first. When the line never finishes (a `sudo` asking for
+  a password, say) it is never typed again, and when going back finds no prompt it is not
+  typed at all; either way the overlay is an amber warning that the clock could not be set,
+  not a ✓. The confirmation before going back is in `fork/boot.js`. See the README,
+  "Checkpoints".
+- `toolchain-extra.dockerfile` — the upstream wasm64 lane's toolchain (`make toolchain`,
+  `wasm64-experimental.yml`), not the shipped engine's: it layers xterm-pty 0.12.0 and
+  `@xterm/xterm` 5.5.0 into that lane's build image, and `make pack` vendors them for
+  `index.html`. The shipped engine's `vendor/` comes from the fork's own Dockerfile
+  (`build.yml`, job `qemu-engine`): `xterm-pty` 0.10.1 and, through its `^4.16.0`
+  dependency, xterm 4.19.0.
 - `xterm-pty.conf` — the COOP/COEP response headers cross-origin isolation requires.
 
 ## Serving
@@ -77,7 +126,9 @@ and appended in order. Nothing is removed from it and nothing in it is carried o
   `lvvcreate`. Neither is input the guest received — that is what #61's "duplicated
   characters" were (#69).
 - **Every line ends CR CR LF**: the guest's tty adds a CR before each LF, and xterm-pty adds
-  another on the way out.
+  another on the way out. The one exception seen is the `Formatting '...'` line the monitor's
+  `snapshot_blkdev` prints, which ends CR LF, so a monitor reply is read up to its closing
+  `(qemu) `, not up to a line ending.
 
 Which to use: a question about **what arrived after a point** — has the guest printed
 `BWR-OK` since the command was sent, has `clear` run since the handover — searches
@@ -116,10 +167,13 @@ alone decides.
 ## Tests
 
 `node --test web/test/*.test.mjs` loads the real page scripts (no bundler, no imports) into a
-browser-shaped scope and drives them against a guest mock that reproduces readline's echo and
-a command reading the tty directly. The screen model is tested against real console output —
-bash/readline, vim, nano and apt under the guest's TERM, a login shell with systemd's shell
-integration and 26.04's sudo, and QEMU's monitor — captured byte for byte into
-`test/console-captures.mjs`, and against short hand-written streams for what `atPrompt()` must
-refuse, each answer taken from the terminal behaviour it exercises rather than from the model.
-CI runs it as the `web-tests` job.
+browser-shaped scope and drives them against a guest mock that reproduces readline's echo, a
+command reading the tty directly, and the `-nographic` mux with the HMP monitor behind it
+(Ctrl-A c, the redrawn echo, `Error:` replies, a monitor that stops answering, and a lost or
+late answer to `stop`, for a `stop` that never answered but ran), with a program that prints
+through the switch, a shell caught between two prompts and a `sudo` that asks for a password.
+The screen model is tested against real console output — bash/readline, vim, nano and apt
+under the guest's TERM, a login shell with systemd's shell integration and 26.04's sudo, and
+QEMU's monitor — captured byte for byte into `test/console-captures.mjs`, and against short
+hand-written streams for what `atPrompt()` must refuse, each answer taken from the terminal
+behaviour it exercises rather than from the model. CI runs it as the `web-tests` job.

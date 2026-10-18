@@ -99,6 +99,28 @@ importInp.onchange = (e) => {
 };
 refreshSaved();
 
+// Checkpoints (#65). Going back undoes everything since the checkpoint, the
+// home folder included, so a mis-click would lose work: it asks first. The
+// question is asked here rather than in SERIALFS, which stays testable.
+const rollbackBtn = document.getElementById('rollbackBtn');
+const hhmm = (d) => String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+const syncRollback = () => { rollbackBtn.disabled = !SERIALFS.checkpointTime(); };
+document.getElementById('checkpointBtn').onclick = () => SERIALFS.checkpoint().finally(syncRollback);
+rollbackBtn.onclick = () => {
+  // The button keeps keyboard focus behind the overlay, so Enter can click it
+  // again mid-operation; a confirm() then would stall the page for a question
+  // whose answer rollback() would refuse anyway.
+  if (SERIALFS.isBusy()) return;
+  const at = SERIALFS.checkpointTime();
+  if (!at) return;
+  if (!window.confirm('Go back to the checkpoint you saved at ' + hhmm(at) + '?\n\n' +
+      'Everything you did after it is undone: files, settings, installed programs and disks.')) {
+    xterm.focus();     // or the next keys go to this button, not the terminal
+    return;
+  }
+  SERIALFS.rollback().finally(syncRollback);
+};
+
 if (Module.bashtionRestore) {
   // The wasm engine loads incoming state but leaves the VM paused (native QEMU
   // auto-resumes; the wasm build does not). Issue monitor 'cont' through the

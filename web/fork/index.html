@@ -7,8 +7,30 @@
     <link rel="stylesheet" href="./vendor/xterm.css">
     <style>
       html, body { height: 100%; margin: 0; background: #111; }
-      #terminal { height: calc(100% - 30px); }
-      #status { color: #9a9a9a; font: 13px system-ui; padding: 6px 10px; height: 18px; }
+      body { display: flex; flex-direction: column; }
+      /* min-height 22 px plus the padding is today's 30 px one-row bar, which
+         keeps the desktop grid at 140x45. */
+      #bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px;
+             padding: 4px 8px 4px 10px; min-height: 22px; font: 12px system-ui; color: #9a9a9a; }
+      /* 370 px: the longest #sfsStatus message ("restored your home folder
+         only — system changes were left out") measured 358 px, plus the 8 px
+         gap, rounded up for other platforms' fonts. Never more than the bar, or
+         a phone scrolls sideways.
+         Squeezed under 3em, #status showed a stray "r." in front of the
+         message, so it drops out instead, gap and all: #sfsStatus comes first
+         in line-breaking order and #status wraps onto a second line, which is
+         clipped. row-reverse keeps #status on the left, flex-end puts a lone
+         message at the left edge, and wrap-reverse sends the clipped line up
+         rather than down across the buttons. */
+      #msgs { flex: 1 1 0; min-width: min(370px, 100%); display: flex;
+              flex-flow: row-reverse wrap-reverse; justify-content: flex-end; gap: 8px;
+              height: 18px; line-height: 18px; overflow: hidden; }
+      #status { flex: 1 1 0; min-width: 3em; font-size: 13px;
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #sfsStatus { order: -1; flex: 0 1 auto; min-width: 0;
+                   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #controls { display: flex; flex-wrap: wrap; gap: 4px; }
+      #terminal { flex: 1 1 0; min-height: 0; background: #000; }
     </style>
   </head>
   <body>
@@ -19,13 +41,26 @@
       button wiring is done there too. Keep it that way, or the CSP in
       deploy/_headers must be relaxed. See deploy/README.md.
     -->
-    <div id="status">loading bundles…</div>
-    <div id="controls" style="position:fixed;top:4px;right:8px;font:12px system-ui;color:#9a9a9a">
-      <span id="sfsStatus" style="margin-right:8px"></span>
-      <button id="exportBtn">Download my work</button>
-      <button id="loadBtn">Load work</button>
-      <button id="loadFileBtn">Load from a file…</button>
-      <input type="file" id="importInp" hidden>
+    <!--
+      The bar sits in the flow, above the terminal. A fixed bar wrapped on a
+      narrow window into rows that went under xterm's canvases, which carry
+      their own z-index, so those buttons could not be clicked (#65 follow-up).
+      The grid is refit only on a window resize, so the bar's height must
+      depend on the window width alone: the messages never wrap (#status gives
+      way first, cut with an ellipsis or, when too narrow to read, hidden), and
+      when the buttons do not fit beside them they wrap onto rows of their own
+      below.
+    -->
+    <div id="bar">
+      <div id="msgs"><div id="status">loading bundles…</div><span id="sfsStatus"></span></div>
+      <div id="controls">
+        <button id="exportBtn">Download my work</button>
+        <button id="loadBtn">Load work</button>
+        <button id="loadFileBtn">Load from a file…</button>
+        <button id="checkpointBtn">Save checkpoint</button>
+        <button id="rollbackBtn" disabled>Go back to checkpoint</button>
+        <input type="file" id="importInp" hidden>
+      </div>
     </div>
     <div id="terminal"></div>
     <script src="./serialtap.js"></script>

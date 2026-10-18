@@ -6,6 +6,7 @@
 lvm2
 quota
 acl
+cryptsetup
 
 # --- Init, scheduling, logging ---
 sudo
@@ -30,10 +31,16 @@ net-tools
 traceroute
 openssh-client
 openssh-server
+wget
+bind9-dnsutils
 
 # --- Firewalling ---
 ufw
 iptables
+# nftables (#63): nftables.service ships disabled and has to stay that way.
+# /etc/nftables.conf starts with `flush ruleset`, which would wipe the rules
+# ufw loads through iptables-nft (#58).
+nftables
 
 # --- Documentation ---
 man-db
@@ -48,6 +55,7 @@ diffutils
 binutils
 bsdextrautils
 plocate
+file
 
 # --- Package-format tooling ---
 rpm
@@ -59,6 +67,8 @@ curl
 
 # --- Printing subsystem ---
 cups
+# cups-bsd (#63): the BSD lpr/lpq/lprm front-ends to the cups above
+cups-bsd
 
 # --- Misc ---
 cowsay

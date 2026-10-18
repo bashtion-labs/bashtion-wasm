@@ -15,13 +15,15 @@ The requirement that drives every decision here is **full system-administration 
 - systemd as PID 1
 - `cron` and `atd` running as real daemons
 - LVM — `pvcreate` / `vgcreate` / `lvcreate` / `lvextend` over device-mapper
+- LUKS encryption — `cryptsetup luksFormat` / `open` / `close` over dm-crypt
 - ext4 with `mount`, `/etc/fstab`, `mount -a`, and `e2fsck`
 - disk quotas — `quotacheck` / `quotaon` / `edquota` / `repquota`
 - a second writable block device (`/dev/vdb`) for storage work
-- netfilter, so `iptables` and `ufw` function
+- netfilter, so `iptables`, `nft` and `ufw` function
 - 9p/virtio, for a host share the guest can mount (`~/share`; unused in the browser,
   where save/restore rides the serial console instead)
-- an unprivileged user with `sudo`, where privileged operations genuinely fail without it
+- an unprivileged user with `sudo`, where privileged operations genuinely fail without it;
+  `sudo` asks for no password, by choice, and `root` is locked, as on stock Ubuntu (#62)
 
 Every one of these lives in the Linux kernel. That rules out the browser-Linux projects that
 emulate syscalls in userspace rather than running a kernel.
@@ -158,7 +160,7 @@ flow control there is. Both directions carry a byte count and a POSIX `cksum`, s
 duplicated byte is reported before anything is unpacked, rather than surfacing as a confusing
 tar error.
 
-Two buttons:
+Three buttons:
 
 - **Download my work** - hands you a `.tgz` file you keep (and also remembers a copy
   in the browser). A file survives a wiped browser profile or a different machine, which is
@@ -166,8 +168,71 @@ Two buttons:
 - **Load work** - restores the copy this browser remembers; **Load from a file...** takes one
   you downloaded.
 
-Both hide the raw transfer behind a progress overlay and clear the scrollback afterward, so
-you see only "Saving your work..." and a completion tick, never a wall of base64.
+All three hide the raw transfer behind a progress overlay and clear the scrollback afterward,
+so you see only "Saving your work..." and a completion tick, never a wall of base64.
+
+**Save checkpoint** and **Go back to checkpoint**, next to them, keep the whole running machine
+instead of your files, and only inside the tab: see [Checkpoints](#checkpoints).
+
+## Checkpoints
+
+**Save checkpoint** keeps the whole running machine, and **Go back to checkpoint** puts it back
+exactly as it was, after the browser's own `confirm()` asks first (#65). It is for trying
+something destructive and getting back. Everything returns: files, installed packages, users,
+settings, whatever is on `/dev/vdb` (partitions, LVM, filesystems), running programs, even the
+terminal size. There is one checkpoint at a time: saving again replaces it, and you can go back
+to it as often as you like. Saving needs the `$` prompt, so that going back lands at one where
+the page can type, and it asks for one for 8 s at most, so a program that keeps printing makes
+it give up rather than wait; going back needs no prompt, because it is for when a program has
+the terminal or the guest is stuck.
+
+It is the snapshot machinery the page already restores from, driven through QEMU's monitor:
+the HMP monitor shares the `-nographic` mux with the serial console, the page already switches
+to it to `cont` the restored VM, and anyone can reach it by typing Ctrl-A c. `web/serialfs.js`
+sends only constant commands, behind the same overlay and busy latch as save/load:
+
+| Step | Why |
+|---|---|
+| blur the terminal, then Ctrl-A NUL, Ctrl-A c | Switches the mux to the monitor. With the keyboard on the terminal, a key pressed now would reach the monitor, and HMP's `q` quits the engine. If a program has turned bracketed paste on, the page turns it off first: inside `ESC[200~`...`ESC[201~` the mux sees ESC after Ctrl-A and never switches. Ctrl-A NUL clears a Ctrl-A the user left pending (readline's start-of-line key): the mux swallows it whole when nothing is held, and otherwise passes ^A and NUL to the guest instead of letting the page's Ctrl-A complete the user's pair. The monitor's `(qemu) ` is looked for anywhere after the switch, with an 8 s cap: until `stop` the guest still runs, and a program that keeps printing buries the prompt at once. |
+| `stop` | Nothing the guest prints can mix into the later replies, and the disk layer and the snapshot are taken at one instant. Its own reply is not read for an `Error:`: guest bytes, even whole `Error: ...` lines, can land between its echo and its prompt, and `stop` has nothing to fail on here, so its prompt alone means stopped and `cont` will follow. The later replies, typed while the guest is stopped, have failed when an `Error:` line comes straight before the next `(qemu) `. |
+| `snapshot_blkdev root /tmp/bashtion-root.qcow2 qcow2`, at the first checkpoint only | `savevm` refuses the raw root disk ("Device 'root' is writable but does not support snapshots"). This puts a qcow2 layer over it, backed by the raw image. The file is in the engine's Emscripten `/tmp`, not the guest's. Made at the first checkpoint, not at start, so a session that never takes one is unchanged. |
+| `savevm bashtion` | One fixed tag. `savevm` replaces a snapshot with the same tag, one slot bounds the memory, and the replaced snapshot's space is reused. |
+| `cont`, always once `stop` worked, and once after a `stop` that never answered | A failed `savevm` leaves the machine as it was, so it carries on. Before that, `info snapshots` decides whether the earlier checkpoint survived: `savevm` deletes the old snapshot of the tag before writing the new one. A `stop` that never answered may have stopped the machine anyway, since QEMU runs it as soon as it reads the line, and `cont` is harmless on a running guest; the page waits 8 s at most for that `cont`, however much the guest prints, and never sends it once `loadvm` was sent. |
+| Ctrl-A NUL, Ctrl-A c, then one line at the prompt | Back to the console. `sudo date -u -s @<now>; sudo hwclock --systohc; stty rows R cols C; clear` puts right what the guest has wrong: its clock stood still while the VM was stopped (and `loadvm` turns it back to the checkpoint), `loadvm` turns the tty size back too, and `clear` removes the monitor's text. The page reports only once `clear`'s erase is in the console record and a prompt has followed it: when the checkpoint caught bash between two prompts, a stale prompt arrives first and the line runs seconds later. If the line never finishes (45 s with nothing printed, as when `sudo` asks for a password), the page still reports the checkpoint saved or the machine back, but as a warning that the clock could not be set, not a ✓. It never types the line again: the output is discarded, so the page cannot tell which of its commands ran, and typed again the line would land in whatever stopped it, which for `sudo` reads it as the password. |
+
+Going back is the same switch (blur, Ctrl-A NUL, Ctrl-A c), `stop`, `loadvm bashtion`, `cont`,
+the switch back, Ctrl-U and Enter for a prompt, then the same line. With no prompt in 8 s the
+line is not typed, since it would land in whatever has the terminal, and the page warns the same
+way. Before that line the page also puts back the terminal modes a running program
+may have left in xterm, which `loadvm` cannot reach: the cursor `top` hid, colours, application
+cursor keys and keypad, and mouse and focus reporting. If `loadvm` fails or never answers, the
+page does **not** `cont`: after a partial load the disks and memory may not match, and a
+machine running on that can corrupt the work you would then download. It switches back, leaves
+the VM stopped, and says to reload, in the overlay and on the status line. Whatever happens, the
+page leaves the mux where it found it - on the serial side, unless the user had switched to the
+monitor by hand - and gives the keyboard back.
+
+**It lives only in the tab.** The snapshot is inside that qcow2 layer, in the engine's
+in-memory filesystem next to the disks. A reload or a closed tab loses it. Keeping state across
+sessions, browsers and devices is a separate design question (#71); until then, **Download my
+work** is the copy that lasts.
+
+**What it costs**, measured on the served page: `info snapshots` gave a VM SIZE of 299 MiB for
+the first checkpoint after a restore and 321 MiB later in a session, about the guest's RAM in
+use. On top of that comes every root-disk cluster written after the first checkpoint, every
+`/dev/vdb` cluster overwritten while a checkpoint still holds the old one (qcow2 keeps both), and
+a brief second copy of a disk file while MEMFS grows it. One slot keeps that bounded.
+
+**How long it takes**, measured on the served page: in the monitor, `snapshot_blkdev` took
+~20 ms, `savevm` 0.4-0.7 s and `loadvm` ~0.5 s. A whole save, click to tick, takes ~25 s (25.2
+and 25.8 s for a first checkpoint, 24.5 and 24.7 s for later ones), and going back takes ~25-28
+s. Almost all of that is the guest running the re-sync line, whose two `sudo`s print nothing for
+15-17 s straight after a checkpoint, and waiting for its prompt.
+
+**`~/share`.** While the 9p share is mounted in the guest, `savevm` refuses: "Migration is
+disabled when VirtFS export path '/share' is mounted in the guest using mount_tag 'share0'".
+The page shows that reason, the machine carries on, and an earlier checkpoint is kept. Nothing
+in the browser mounts the share: it is `noauto` in the image's `/etc/fstab`.
 
 ## Known limits
 
@@ -176,12 +241,20 @@ you see only "Saving your work..." and a completion tick, never a wall of base64
   is served from a small repository baked into the image (offline) for the included packages.
   The guest is configured to be *coherently* offline rather than half-configured:
   `systemd-resolved` is masked, `/etc/resolv.conf` and `/etc/netplan/` say why they are empty,
-  and `/etc/motd` states it at the start of every session.
+  and `/etc/motd` states it at the start of every session. That repository is apt's only
+  source, and `/etc/apt/sources.list` says why it lists no mirror. apt does not retry, and
+  `apt update` fails rather than report a fetch it could not make as success, so a package
+  that is not in the repository fails in seconds.
 - **A save keeps your files, not the whole machine.** It brings back `/home/user` and what
   changed under `/etc`, `/opt`, `/srv`, `/usr/local`, `/root` and `/var/spool/cron` - those
   only onto the same build of the image; onto a different build, the home directory alone.
   Installed packages, the rest of `/var` and everything on `/dev/vdb` do not survive a save.
-  See "Saving work" for what travels and why the rest cannot.
+  See "Saving work" for what travels and why the rest cannot. A checkpoint keeps the whole
+  machine, but only inside the tab.
+- **A checkpoint lasts only as long as the tab, and costs memory.** It is held in the page's
+  memory: a reload or a closed tab loses it, and it takes about as much as the guest's RAM in
+  use (~300 MiB), plus every root-disk cluster written since the first checkpoint and every
+  `/dev/vdb` cluster overwritten since the last one. See "Checkpoints".
 - **`/dev/vdb` is practice space, not storage.** It is 4 GiB on paper, but it is a qcow2 image
   held in the page's memory, and it grows there as the guest writes to it: writing gigabytes to
   it can run the tab out of memory, taking any unsaved work with it.
@@ -231,8 +304,8 @@ host serving the page must send `Cross-Origin-Opener-Policy: same-origin` and
 
 `deploy/` ships the site on Cloudflare's free plan. The small files (page, JS, kernel, ROM,
 lab disk) are served as static assets; the three large files (the engine,
-`qemu-system-x86_64.d8537ec6ccf0354a.wasm`, named by its hash, and `load-rootfsB.v3.data` and
-`load-state.v3.data` - each over the 25 MiB static-asset cap; `v3` is the snapshot set's
+`qemu-system-x86_64.d8537ec6ccf0354a.wasm`, named by its hash, and `load-rootfsB.v4.data` and
+`load-state.v4.data` - each over the 25 MiB static-asset cap; `v4` is the snapshot set's
 release tag; `deploy/worker.js` names all three) live in a **private R2 bucket**
 and are streamed by a small Worker (`deploy/worker.js`) from the same origin. R2's zero egress
 fees cover the ~1.2 GB per cold load.
@@ -259,6 +332,11 @@ stack (fork JIT engine, CI artifacts, page served locally):
   pasted commands execute).
 - Download / Load work proven: a file written in the guest, downloaded, deleted, then
   restored by Load - with no base64 shown to the user.
+- Checkpoints proven (#65): **Save checkpoint ~25 s, Go back to checkpoint ~25-28 s**, about
+  1-1.6 s of it in the monitor. Going back undid a deleted file, a new user, an installed
+  package, an LVM PV on `/dev/vdb` and a changed terminal size, twice, including from a
+  terminal held by `sleep 600` with bracketed paste on, from `yes` flooding the console, and
+  from `top` (the cursor comes back).
 - Boot banner verified to hide all boot output and reveal a clean prompt.
 
 ## Licence

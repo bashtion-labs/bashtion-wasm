@@ -28,3 +28,6 @@ load-*.js
 /deploy/public/
 # rclone/wrangler local state should never be committed
 .wrangler/
+
+# Factory job state (specs, builds, reviews); runtime only
+/factory/jobs/

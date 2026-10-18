@@ -7,10 +7,11 @@ import { dirname, join } from 'node:path';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const read = (p) => readFileSync(join(ROOT, p), 'utf8');
 
-// Every Markdown document in the repository, build output and upstream code
-// aside - not only the deploy guide, which is where the check began while the
-// top-level README went on naming the bundles without their tag.
-const SKIP = new Set(['.git', 'node_modules', 'third_party', 'out', 'dist', 'public']);
+// Every Markdown document in the repository, build output, upstream code and
+// the factory's backlog and job notes aside - not only the deploy guide, which
+// is where the check began while the top-level README went on naming the
+// bundles without their tag. A backlog item or a spec may quote an old name.
+const SKIP = new Set(['.git', 'node_modules', 'third_party', 'out', 'dist', 'public', 'factory']);
 const markdown = (dir = '') => readdirSync(join(ROOT, dir), { withFileTypes: true }).flatMap((e) => {
   const p = dir ? `${dir}/${e.name}` : e.name;
   if (e.isDirectory()) return SKIP.has(e.name) ? [] : markdown(p);

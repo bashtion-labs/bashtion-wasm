@@ -63,15 +63,18 @@ the command. For example:
 sudo lsblk
 ```
 
-On a normal computer, `sudo` asks for a password. Here it does not — you can just use it. This
-keeps things simple.
+On a normal Ubuntu computer, `sudo` asks for your own password. Here it does not, on purpose —
+you can just use it.
+
+The `root` account is locked, just as it is on a normal Ubuntu computer, so `su` does not work.
+If you want a root shell, type `sudo -i`. Type `exit` to leave it.
 
 ## Saving your work
 
 Your work is **not** saved automatically. If you close the tab without saving, your files are
 gone. So save before you leave.
 
-There are two buttons at the top of the page:
+Use the buttons at the top of the page:
 
 ### Download my work
 
@@ -119,13 +122,62 @@ files are back, but your changes to system settings (files in `/etc`, users and 
 jobs, folders in `/opt`) are left out, because they could undo fixes in the new version. If
 you still need those changes, make them again.
 
+## Trying something risky: checkpoints
+
+Want to try something that could break things, like deleting system files, partitioning the
+spare disk, or changing settings you do not understand yet? Save a checkpoint first. If it goes
+wrong, you can go back to it.
+
+### Save checkpoint
+
+Wait until you see the `$` prompt, then click **Save checkpoint**. A window says "Saving a
+checkpoint…". It takes about half a minute. Then it says "✓ Checkpoint saved", and the top of
+the page shows the time you saved it.
+
+A checkpoint keeps **the whole machine**, exactly as it is at that moment: your files, programs
+you installed, users you added, settings, the spare disk `/dev/vdb`, and even programs that are
+running.
+
+### Go back to checkpoint
+
+Click **Go back to checkpoint**. The page asks you first, because going back undoes
+**everything** you did after the checkpoint, your files included. Click **OK** to go back, or
+**Cancel** to leave things as they are.
+
+After about half a minute you see the `$` prompt again, and everything is just as it was when
+you saved the checkpoint.
+
+You do not need the `$` prompt to go back. If a command is stuck, or keeps printing and will
+not stop, going back still works.
+
+### Good to know
+
+- There is **one checkpoint** at a time. Saving a new one replaces the old one.
+- You can go back to the same checkpoint **as many times as you like**.
+- A checkpoint is kept **only while this tab stays open**. If you reload the page or close the
+  tab, the checkpoint is lost.
+- A checkpoint is **not** a way to keep your work. To keep your work, use **Download my work**.
+- A checkpoint uses your browser's memory, about as much as the whole running machine. That is
+  why there is only one.
+- If the window says "Could not save a checkpoint", the reason is under it. Your machine keeps
+  running as before, and so does your earlier checkpoint, unless the window says it is gone.
+- If the window says "Could not go back to your checkpoint" and tells you to reload, reload the
+  page. The top of the page says so too, after the window has gone.
+- If the window says "Checkpoint saved, but the clock could not be set" or "Back at your
+  checkpoint, but the clock could not be set", the checkpoint still worked: it is saved, or you
+  are back at it. Only the time inside the machine may be wrong, and the screen may not fit the
+  window. See "The clock looks wrong" under Quick fixes, and "The window size" under Things to
+  know.
+
 ## Things to know
 
 - **No internet inside.** bashtion cannot reach websites on the internet. `ping 8.8.8.8` will
   not work, and that is expected. But `ping 127.0.0.1` (talking to itself) does work.
 - **Installing programs.** You can install some programs with `sudo apt install`, but only the
   ones that were packed in ahead of time. It will not download new ones from the internet.
-  Try `sudo apt install tree` to see it work.
+  Try `sudo apt install tree` to see it work. `ls /srv/apt` shows which programs you can
+  install. Asking for any other one says "Unable to locate package" straight away. That means
+  it was not packed in, not that you typed the name wrong.
 - **A spare disk.** There is a second, empty 4 GB disk called `/dev/vdb`, for practising with
   partitions, filesystems and LVM. It is not a place to keep big files: everything written to
   it is held in your browser's memory, so filling it up can crash the tab and lose any work you
@@ -142,8 +194,8 @@ you still need those changes, make them again.
   Linux once you are back at your own `$` prompt: when a program finishes, or when you leave a
   root shell (`sudo -s`, `sudo su`) with `exit`.
 - **It's your own computer.** Anything you do only affects your browser tab. You cannot break
-  anyone else's system, and you cannot harm your real computer. If something goes wrong, just
-  reload the page and start fresh.
+  anyone else's system, and you cannot harm your real computer. If something goes wrong, go
+  back to your checkpoint if you saved one, or just reload the page and start fresh.
 
 ## Quick fixes
 
@@ -151,12 +203,18 @@ you still need those changes, make them again.
 Wait up to a few minutes on the first start. The system is booting behind the logo. If it is
 still blank after that, reload the page.
 
-**I clicked Download my work and it says "wait for the $ prompt."**
-The system was not fully ready yet. Wait until you see the `user@bashtion:~$` prompt, then
-click the button again.
+**I clicked Download my work, Load work or Save checkpoint and it says "wait for the $ prompt."**
+The system was not fully ready yet, or a command was still running. Wait until you see the
+`user@bashtion:~$` prompt, then click the button again. If a command keeps printing and never
+gives the prompt back (like `ping`), click the black screen and press **Ctrl+C** to stop it
+first.
 
 **My typing does nothing.**
 Click once on the black screen first, then type. The page needs to know you are typing there.
+
+**Go back to checkpoint is greyed out.**
+There is no checkpoint in this tab yet. Click **Save checkpoint** first. Reloading the page
+loses the checkpoint, so after a reload the button is greyed out again.
 
 **Everything is very slow.**
 That is normal. This is a whole Linux computer running inside your browser. Give commands a few

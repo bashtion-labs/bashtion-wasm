@@ -79,7 +79,7 @@ for f in index.html boot.js serialfs.js serialtap.js termfit.js bootscreen.js mo
   [ -e "$PUB/$f" ] || die "assembled public/ is missing $f"
 done
 # The kernel, the lab disk and the ROMs are versioned with the snapshot set
-# (load-kernel.v3.data, load-lab.v3.data, load-rom.v3.data), so ask each
+# (load-kernel.v4.data, load-lab.v4.data, load-rom.v4.data), so ask each
 # loader which name it fetches rather than assuming one.
 for l in kernel lab rom; do
   data=$(sed -n "s/.*REMOTE_PACKAGE_BASE = '\([^']*\)'.*/\1/p" "$PUB/load-$l.js")

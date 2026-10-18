@@ -28,8 +28,8 @@
 # belongs to a matched set that changes together, and an immutable rule on a
 # fixed name is what strands a browser on an old copy: no later header change
 # reaches a copy already cached that way.
-# - The snapshot set's static bundles (load-kernel.v3.data, load-lab.v3.data,
-#   load-rom.v3.data) are renamed with its tag, and revalidate too, so a
+# - The snapshot set's static bundles (load-kernel.v4.data, load-lab.v4.data,
+#   load-rom.v4.data) are renamed with its tag, and revalidate too, so a
 #   release that forgot to bump the tag still reaches everyone. An unchanged
 #   file revalidates as a 304 with no body, even the 17 MiB kernel.
 # - out.js names the engine it was built with (qemu-system-x86_64.<hash>.wasm,

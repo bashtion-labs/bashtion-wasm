@@ -3,12 +3,14 @@
 supposed to be.
 
 Every check here exists because something shipped broken and nothing caught
-it: an empty offline apt index, no man pages, a root filesystem 95% full, a
-failed fallocate that still filled it and a save that could not run once it
-had, a user outside adm, a half-configured network, a firewall that reported
-rules it had not loaded, and a clock running at 0.4x wall time. Build-time
-assertions cover the parts that are visible in the rootfs; these cover the
-parts that are only true once the kernel is running.
+it: an empty offline apt index, an apt that spent minutes retrying a mirror it
+could never reach and then reported success, no man pages, a root filesystem
+95% full, a failed fallocate that still filled it and a save that could not
+run once it had, a user outside adm, a half-configured network, a firewall
+that reported rules it had not loaded, a root account whose password was
+`root`, and a clock running at 0.4x wall time.
+Build-time assertions cover the parts that are visible in the rootfs; these
+cover the parts that are only true once the kernel is running.
 
 The invocation mirrors snapshot/make-snapshot.sh, so this tests the machine
 that is actually shipped. Native TCG, not the wasm engine - it cannot prove
@@ -187,6 +189,79 @@ def run_checks(con):
     rc, out = capture(con, 'tree --version')
     check('#53 the installed package runs', rc == 0, out)
 
+    # ---- #56 apt fails at once offline, and says so -----------------------
+    # mmdebstrap left the snapshot mirror in sources.list and the build's
+    # Acquire::Retries "5" in apt.conf.d, so every Ubuntu package looked
+    # installable: apt retried each one for minutes, and `apt update` ended
+    # "All packages are up to date." with exit 0. Every status checked below
+    # is apt's own: apt writes to a file, not into a pipe as in #53.
+    # indextargets lists every configured source, fetched or not; apt-cache
+    # policy would show only those whose lists were downloaded.
+    rc, out = capture(con, "apt-get indextargets --no-release-info --format '$(URI)'")
+    uris = out.split()
+    check('#56 apt has no source but the offline repository',
+          len(uris) > 0 and all(u.startswith('file:/srv/apt/') for u in uris), out)
+    # the first file anyone opens to find the mirror, so it says why there is none
+    rc, out = capture(con, "grep -q bashtion /etc/apt/sources.list && "
+                           "grep -cvE '^\\s*(#|$)' /etc/apt/sources.list")
+    check('#56 /etc/apt/sources.list explains itself', out.strip() == '0', out)
+    # Retries 0 alone still lets `apt update` exit 0 on a failed fetch: it
+    # takes Error-Mode any to make that an error
+    rc, out = capture(con, 'apt-config shell R Acquire::Retries E APT::Update::Error-Mode')
+    words = out.split()
+    check('#56 apt neither retries nor ignores a failed fetch',
+          "R='0'" in words and "E='any'" in words, out)
+    # Error-Mode any must not fail the local-only update: the flat repo's
+    # Ign: InRelease / Release lines are not failures. 60 s, not 30, because
+    # it still reads the dpkg database under TCG on one vCPU.
+    t = time.time()
+    rc, out = capture(con, 'sudo apt-get update >/tmp/bashtion-56.log 2>&1; echo "apt=$?"; '
+                           'tail -3 /tmp/bashtion-56.log; rm -f /tmp/bashtion-56.log', 180)
+    dt = time.time() - t
+    check('#56 apt-get update succeeds offline (%.1fs)' % dt,
+          'apt=0' in out.split() and dt < 60, out)
+    # nginx is in Ubuntu main, so the old image tried to fetch it; it is not
+    # in /srv/apt, so now apt has no candidate for it at all
+    t = time.time()
+    rc, out = capture(con, 'sudo apt-get install -y nginx >/tmp/bashtion-56.log 2>&1; '
+                           'echo "apt=$?"; tail -3 /tmp/bashtion-56.log; '
+                           'rm -f /tmp/bashtion-56.log', 90)
+    dt = time.time() - t
+    check('#56 apt-get install of a package not in /srv/apt fails at once (%.1fs)' % dt,
+          'apt=100' in out.split() and 'Unable to locate package' in out and dt < 30, out)
+    # A mirror added from a tutorial must fail, quickly, and not exit 0 as if
+    # it had been fetched. Added and removed in one command, so a failure
+    # leaves nothing under /etc for the #50 clean-pack check.
+    t = time.time()
+    rc, out = capture(con, "echo 'deb http://archive.ubuntu.com/ubuntu resolute main' | "
+                           "sudo tee /etc/apt/sources.list.d/bashtion-56.list >/dev/null; "
+                           "sudo apt-get update >/tmp/bashtion-56.log 2>&1; echo \"apt=$?\"; "
+                           "sudo rm -f /etc/apt/sources.list.d/bashtion-56.list; "
+                           "tail -3 /tmp/bashtion-56.log; rm -f /tmp/bashtion-56.log", 90)
+    dt = time.time() - t
+    check('#56 with a mirror added, apt-get update fails fast and says so (%.1fs)' % dt,
+          'apt=100' in out.split() and 'Failed to fetch' in out and dt < 30, out)
+    # the one screen everyone sees names the way to list what can be installed
+    rc, out = capture(con, "grep -c 'ls /srv/apt' /etc/motd")
+    check('#56 the motd says how to list what apt can install', out.strip() == '1', out)
+    # Each root `apt-get update` runs ubuntu-pro-client's
+    # APT::Update::Pre-Invoke hook (/etc/apt/apt.conf.d/20apt-esm-hook.conf),
+    # which starts apt-news.service and esm-cache.service with --no-block.
+    # They are python3 oneshots that outlive apt-get, and with the image's
+    # bytecode caches deleted their first run writes about 190 .pyc files
+    # to /. The #70 df delta measured them (+73728 and +131072 bytes with
+    # file=0:0, run 39168000877), so no later check may start before they
+    # finish: sync cannot stop a process that is still writing. A running
+    # oneshot is "activating", for which is-active exits non-zero, so the loop
+    # reads the state words. One sudo, as root: systemd's private socket, and
+    # sudo's own logging lands before #70 measures.
+    rc, out = capture(con, "sudo bash -c 't=$SECONDS; while systemctl is-active "
+                           "apt-news.service esm-cache.service | grep -qx -e activating "
+                           "-e deactivating && [ $((SECONDS - t)) -lt 300 ]; do sleep 1; done; "
+                           "echo \"waited=$((SECONDS - t))s\" $(systemctl show -p Id "
+                           "-p LoadState -p ActiveState apt-news.service esm-cache.service)'", 360)
+    print('     #56 apt-news and esm-cache: %s' % out.replace('\n', ' | ')[:600], flush=True)
+
     # ---- #54 manual pages ------------------------------------------------
     rc, out = capture(con, 'man -w ls')
     check('#54 man resolves a page for ls', rc == 0 and '/man/' in out, out)
@@ -236,9 +311,11 @@ def run_checks(con):
         # The refusal arrives as SIGXFSZ, whose default action dumps core into
         # the cwd - on / - unless the soft core limit is 0, as Ubuntu's systemd
         # sets it. A core there would also land in the #50 clean-pack check.
+        # df counts ext4's delayed-allocation data when written, and the extent
+        # blocks that map it at writeback: sync keeps those out of the window.
         rc, out = capture(con,
-                          'b=$(df --output=used -B1 / | tail -1); '
-                          '%sfallocate -l 10G %s; r=$?; '
+                          'sync; b=$(df --output=used -B1 / | tail -1); '
+                          '%sfallocate -l 10G %s; r=$?; sync; '
                           'a=$(df --output=used -B1 / | tail -1); '
                           'echo "rc=$r delta=$((a - b)) '
                           'file=$(stat -c %%s:%%b %s 2>/dev/null || echo absent) '
@@ -274,6 +351,30 @@ def run_checks(con):
     rc, out = capture(con, 'journalctl -n 5 --no-pager | wc -l', 180)
     check('#59 journalctl works unprivileged and piped',
           rc == 0 and out.strip().isdigit() and int(out.strip()) > 0, out)
+
+    # ---- #62 root is locked; sudo asks for no password, by choice --------
+    # root had the password `root`, set at build time and told to nobody,
+    # where stock Ubuntu ships it locked
+    rc, out = capture(con, 'sudo passwd -S root')
+    check('#62 root is locked', out.split()[:2] == ['root', 'L'], out)
+    # A lock only puts "!" in front of the hash, and `passwd -u` takes it off
+    # again: the field must hold no hash at all
+    rc, out = capture(con, 'sudo getent shadow root | cut -d: -f2')
+    check('#62 ...with no password behind the lock',
+          out.startswith('!') and '$' not in out, out)
+    # The page's save, load and clock type sudo on the console and cannot
+    # answer a prompt. -n fails rather than asks, so a policy that wants a
+    # password fails this check instead of wedging the console.
+    rc, out = capture(con, 'sudo -n true')
+    check('#62 sudo asks for no password, by choice', rc == 0, out)
+    # deliberate, so the file the rule lives in says why
+    rc, out = capture(con, 'sudo grep -c bashtion /etc/sudoers.d/user')
+    check('#62 the sudoers rule says why',
+          out.strip().isdigit() and int(out.strip()) >= 1, out)
+    # and so does the one screen everyone sees
+    rc, out = capture(con, "grep -qF 'no password' /etc/motd && "
+                           "grep -qF 'root is locked' /etc/motd")
+    check('#62 the motd says so', rc == 0, out)
 
     # ---- #52 the clock ---------------------------------------------------
     rc, out = capture(con, 'cat /sys/devices/system/clocksource/clocksource0/current_clocksource')
@@ -402,6 +503,78 @@ def run_checks(con):
     rc, out = capture(con, 'stty rows 43 cols 160; stty size')
     check('#60 the console accepts a window size', out.strip().endswith('43 160'), out)
     capture(con, 'stty rows 24 cols 80')
+
+    # ---- #63 the utilities that were missing ------------------------------
+    tools = ('file', 'wget', 'nslookup', 'nft', 'cryptsetup', 'lpr', 'lpq', 'lprm')
+    rc, out = capture(con, 'command -v ' + ' '.join(tools))
+    # command -v succeeds when any one of the names is found, so count them
+    check('#63 %s are all on the PATH' % ' '.join(tools),
+          rc == 0 and sorted(os.path.basename(p) for p in out.split()) == sorted(tools), out)
+    rc, out = capture(con, 'man -w ' + ' '.join(tools))
+    check('#63 man resolves a page for each of them',
+          rc == 0 and out.count('/man/') == len(tools), out)
+    rc, out = capture(con, 'file -bL /usr/bin/ls')
+    check('#63 file identifies a binary', 'ELF 64-bit' in out, out)
+    # the #58 http.server is still listening on loopback
+    rc, out = capture(con, 'wget -nv -O /dev/null http://localhost:8111/', 120)
+    check('#63 wget fetches over loopback', rc == 0, out)
+    t = time.time()
+    rc, out = capture(con, 'wget -O /dev/null http://snapshot.ubuntu.com/', 90)
+    check('#63 wget of an outside URL fails fast (%.1fs)' % (time.time() - t),
+          rc != 0 and time.time() - t < 30, out)
+    t = time.time()
+    rc, out = capture(con, 'nslookup snapshot.ubuntu.com', 90)
+    check('#63 nslookup fails fast (%.1fs)' % (time.time() - t),
+          rc != 0 and time.time() - t < 30, out)
+
+    # ---- #63 nft, alongside ufw -------------------------------------------
+    # /etc/nftables.conf starts with `flush ruleset`, ufw's rules included
+    rc, out = capture(con, 'systemctl is-enabled nftables.service')
+    check('#63 nftables.service is disabled', out.strip() == 'disabled', out)
+    # After #58, so ufw has already been through iptables-nft. One transaction:
+    # the table loads whole or not at all, and is deleted straight after.
+    rc, out = capture(con, "sudo nft 'add table inet bashtion63; "
+                           "add chain inet bashtion63 input "
+                           "{ type filter hook input priority 0; policy accept; }; "
+                           "add rule inet bashtion63 input ct state established,related accept; "
+                           "add rule inet bashtion63 input tcp dport 8163 reject' && "
+                           "sudo nft list table inet bashtion63", 180)
+    check('#63 nft loads an inet table with a ct state rule and a reject',
+          rc == 0 and 'ct state established,related accept' in out
+          and 'tcp dport 8163 reject' in out, out)
+    rc, out = capture(con, 'sudo nft delete table inet bashtion63 && sudo nft list tables', 180)
+    check('#63 ...and deletes it, leaving no table behind',
+          rc == 0 and 'bashtion63' not in out, out)
+
+    # ---- #63 LUKS over dm-crypt -------------------------------------------
+    # Only the PBKDF is forced cheap. This checks the kernel side - dm-crypt
+    # for the data, AF_ALG for the keyslots, XTS - and argon2id's default cost
+    # on native TCG says nothing about the browser. Formatted, opened, closed
+    # and removed in one command, so a failure strands nothing.
+    rc, out = capture(con,
+                      "sudo bash -c 'f=/tmp/bashtion-63.luks; truncate -s 32M $f; "
+                      "echo bashtion-63 | cryptsetup luksFormat --batch-mode "
+                      "--pbkdf pbkdf2 --pbkdf-force-iterations 1000 $f; echo format=$?; "
+                      "echo bashtion-63 | cryptsetup open $f bashtion63; echo open=$?; "
+                      "test -b /dev/mapper/bashtion63 && echo mapped=1; "
+                      "cryptsetup status bashtion63; cryptsetup close bashtion63; echo close=$?; "
+                      "rm -f $f; udevadm settle; "
+                      "echo maps=$(ls /dev/mapper | grep -c bashtion63) "
+                      "loops=$(losetup -a | grep -c bashtion-63)' 2>&1", 600)
+    words = out.split()
+    check('#63 cryptsetup formats a LUKS volume on a file and opens it',
+          'format=0' in words and 'open=0' in words and 'mapped=1' in words, out)
+    check('#63 ...with the default cipher, aes-xts-plain64',
+          re.search(r'cipher:\s+aes-xts-plain64\b', out) is not None, out)
+    check('#63 ...and closing it leaves no mapping or loop device behind',
+          'close=0' in words and 'maps=0' in words and 'loops=0' in words, out)
+
+    # ---- #63 the BSD printing commands ------------------------------------
+    # No queue is configured, so there is nothing to list - but lpq has to
+    # hear that from the scheduler, not fail to reach it.
+    rc, out = capture(con, 'lpq', 180)
+    check('#63 lpq reaches the cups scheduler',
+          'no default destination' in out and 'Unable to connect' not in out, out)
 
     # ---- #70 a save works when / is 100% full -----------------------------
     # LAST on purpose: this fills the root filesystem, and anything that ran

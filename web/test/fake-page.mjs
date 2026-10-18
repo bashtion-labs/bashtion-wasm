@@ -175,8 +175,14 @@ export class FakeGuest {
     this.trace.push(['monitor', line]);
     if (this.opts.monitorHangs === line) this.hung = true;
     if (!this.answers()) return;
-    // a printing program's line already on its way when `stop` lands
-    if (line === 'stop' && this.reader && this.reader.line) this.write(this.reader.line);
+    // A printing program around `stop`, as the engine interleaves it: part of
+    // a line just before the echo, and the vCPU's last translation block - a
+    // whole line - between the echo and the prompt (seen on the served page).
+    // `printsAtStop` is a background job's line, for when the shell is at a
+    // prompt.
+    const printing = line === 'stop' &&
+      (this.opts.printsAtStop || (this.reader && this.reader.line));
+    if (printing) this.write(printing.slice(0, 7));
     // HMP redraws the whole line on every keystroke
     for (let i = 1; i <= line.length; i++) {
       this.write(line.slice(0, i) + '\x1b[K' + (i < line.length ? '\x1b[D'.repeat(i) : ''));
@@ -185,7 +191,10 @@ export class FakeGuest {
     const say = (s) => this.write(s + '\r\r\n');
     const fail = (s) => say('Error: ' + s);
     switch (line) {
-      case 'stop': this.running = false; break;
+      case 'stop':
+        this.running = false;
+        if (printing) this.write(printing);
+        break;
       case 'cont':
         this.running = true;
         if (this.opts.betweenPrompts) this.lagging = this.opts.betweenPrompts;

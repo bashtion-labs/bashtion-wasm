@@ -346,7 +346,7 @@ const RESYNC = /^sudo date -u -s @(\d+) >\/dev\/null 2>&1; sudo hwclock --systoh
 const VIRTFS = "Migration is disabled when VirtFS export path '/share' is mounted in the guest " +
                "using mount_tag 'share0'";
 // every wait short, so the paths that give up are reached in a test's time
-const FAST = { idle: 300, work: 300, hard: 1500, hardWork: 1500, mux: 300 };
+const FAST = { idle: 300, work: 300, hard: 1500, hardWork: 1500, mux: 300, prompt: 300 };
 
 function machine(guestOpts = {}, { xterm = true, termfit = true } = {}) {
   const page = makePage(guestOpts);
@@ -510,7 +510,47 @@ test('#65 going back works while a program keeps printing', async () => {
                                                   'mux: serial']);
     assert.equal(program.got, '', 'the page typed into the printing program');
     assert.equal(p.guest.focus, 'serial');
+    assert.equal(p.guest.running, true);
   } finally { clearInterval(program.timer); }
+});
+
+test('#65 guest lines inside the reply to stop never make it look failed', async () => {
+  // `stop` is typed while the guest runs, and the engine lets guest bytes -
+  // here part of a line before the echo and a whole `Error: ...` line after
+  // it - land inside its reply. Read as a failure, the machine would be left
+  // stopped with no `cont`, and the reason would be the guest's garbled text.
+  const p = machine({ printsAtStop: 'Error: connection refused, retrying\r\n' });
+  assert.equal(await p.SERIALFS.checkpoint(), true, findOverlay(p, 'bwOvSub').textContent);
+  assert.deepEqual(p.guest.monitor, ['stop', LAYER, 'savevm bashtion', 'cont']);
+  assert.equal(p.guest.running, true);
+  assert.equal(await p.SERIALFS.rollback(), true, findOverlay(p, 'bwOvSub').textContent);
+  assert.deepEqual(p.guest.monitor.slice(-3), ['stop', 'loadvm bashtion', 'cont']);
+  assert.equal(p.guest.running, true);
+  assert.equal(p.guest.focus, 'serial');
+  // the fake really does put the line where the old rule would have read it
+  assert.match(p.guest.payloadSeen(), /\r\r\nError: connection refused, retrying\r\n\(qemu\) /);
+});
+
+test('#65 saving while a program keeps printing gives up in seconds, typing nothing more', async () => {
+  // `ping` or `top` resets an idle timer forever, and the overlay keeps the
+  // user from reaching the terminal to stop it: only a hard cap ends this.
+  const p = machine({ writeDelayMs: 2 });
+  p.win.__bwTimeouts = { idle: 300, work: 300, hard: 60000, hardWork: 60000, mux: 300, prompt: 300 };
+  const program = p.guest.spew('64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.1 ms\r\n', 20);
+  let late;
+  try {
+    const ok = await Promise.race([
+      p.SERIALFS.checkpoint(),
+      new Promise((_, rej) => { late = setTimeout(
+        () => rej(new Error('checkpoint() was still waiting for a prompt after 5 s')), 5000); }),
+    ]);
+    assert.equal(ok, false);
+    assert.equal(findOverlay(p, 'bwOvTitle').textContent,
+                 'Click the terminal, wait for the $ prompt, then try again');
+    assert.deepEqual(p.guest.monitor, []);
+    assert.equal(p.guest.focus, 'serial');
+    assert.equal(p.SERIALFS.isBusy(), false);
+  } finally { clearInterval(program.timer); clearTimeout(late); }
 });
 
 test('#65 a Ctrl-A the user left pending in the mux does not turn the switch around', async () => {

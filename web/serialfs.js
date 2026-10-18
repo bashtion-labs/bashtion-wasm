@@ -238,10 +238,12 @@ const SERIALFS = (() => {
     await tidy();
   }
 
-  async function ensureShell() {
+  // `hardMs` caps the whole wait, not just the silence: a program that keeps
+  // printing (`ping`, `top`) never lets the 8 s idle timer run out (#65).
+  async function ensureShell(hardMs) {
     const t0 = serialLen();
     paste('\x15\n');                   // Ctrl-U clears any partial line, then Enter
-    return !!(await waitFor(/[$#] ?$/m, t0, 8000));
+    return !!(await waitFor(/[$#] ?$/m, t0, 8000, hardMs));
   }
 
   // ---- save --------------------------------------------------------------
@@ -503,15 +505,22 @@ const SERIALFS = (() => {
   // monitor's echo of the command never contains - looked for anywhere after
   // the command, as in mux(), since around `stop` and `cont` the guest may
   // still be printing. A failure is the line `Error: <reason>` straight
-  // before that prompt (HMP prints the two together), so a program printing
-  // lines that start `Error: ` is not taken for one. `cmd` is always one of
-  // the constants here: nothing the user or the guest supplies goes into one.
+  // before that prompt, so a program printing lines that start `Error: ` is
+  // not taken for one - except in `stop`'s reply, which is never read for one.
+  // `stop` is the one command typed while the guest runs, and the vCPU can
+  // finish a translation block after the echo has gone out, so guest bytes -
+  // a whole `Error: ...` line among them - can land between the echo and the
+  // prompt (seen on the served page). And `stop` has nothing to fail on here:
+  // it succeeds even on a stopped VM, and QEMU 8.2 refuses it only during a
+  // dump. Its prompt alone means stopped, so `cont` is never skipped. `cmd` is
+  // always one of the constants here: nothing the user or the guest supplies
+  // goes into one.
   async function run(cmd, idleMs) {
     const t0 = serialLen();
     paste(cmd + '\n');
     if (!await waitFor(/\(qemu\) /, t0, idleMs)) return { why: NO_ANSWER };
     const reply = serialFrom(t0);
-    const err = reply.match(/(?:^|\n)Error: ([^\r\n]*)\r*\n\(qemu\) /);
+    const err = cmd !== 'stop' && reply.match(/(?:^|\n)Error: ([^\r\n]*)\r*\n\(qemu\) /);
     if (err) return { why: sentence(err[1]) };
     if (cmd === 'stop') paused = true;
     if (cmd === 'cont') paused = false;
@@ -575,8 +584,10 @@ const SERIALFS = (() => {
     try {
       ov.show('Preparing…');
       // A prompt is required so that going back to this checkpoint lands at
-      // one, where the re-sync can be typed.
-      if (!await ensureShell()) {
+      // one, where the re-sync can be typed. Asked for 8 s at most, printing
+      // or not: the overlay covers the terminal, so a user whose `ping` is
+      // still running cannot reach it to stop it (seen on the served page).
+      if (!await ensureShell(ms('prompt', 8000))) {
         ov.fail('Click the terminal, wait for the $ prompt, then try again');
         return false;
       }
@@ -657,7 +668,7 @@ const SERIALFS = (() => {
           '\x1b[?25h\x1b[0m\x1b[?1l\x1b>\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l', r));
       }
       // The checkpoint was taken at a prompt, so there is one to come back to.
-      if (await ensureShell()) await resync();
+      if (await ensureShell(ms('prompt', 8000))) await resync();
       focus();
       ov.done('✓ Back at your checkpoint');
       status('back at your checkpoint from ' + hhmm(savedAt));

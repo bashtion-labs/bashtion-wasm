@@ -112,8 +112,12 @@ rollbackBtn.onclick = () => {
   // whose answer rollback() would refuse anyway.
   if (SERIALFS.isBusy()) return;
   const at = SERIALFS.checkpointTime();
-  if (!at || !window.confirm('Go back to the checkpoint you saved at ' + hhmm(at) + '?\n\n' +
-      'Everything you did after it is undone: files, settings, installed programs and disks.')) return;
+  if (!at) return;
+  if (!window.confirm('Go back to the checkpoint you saved at ' + hhmm(at) + '?\n\n' +
+      'Everything you did after it is undone: files, settings, installed programs and disks.')) {
+    xterm.focus();     // or the next keys go to this button, not the terminal
+    return;
+  }
   SERIALFS.rollback().finally(syncRollback);
 };
 

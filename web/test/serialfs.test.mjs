@@ -345,6 +345,7 @@ const MONITOR_COMMANDS = new Set(['stop', LAYER, 'savevm bashtion', 'info snapsh
 const RESYNC = /^sudo date -u -s @(\d+) >\/dev\/null 2>&1; sudo hwclock --systohc >\/dev\/null 2>&1; stty rows 30 cols 100; clear$/;
 const VIRTFS = "Migration is disabled when VirtFS export path '/share' is mounted in the guest " +
                "using mount_tag 'share0'";
+const UNSYNCED = 'The time inside the machine may be wrong, and so may the screen size.';
 // every wait short, so the paths that give up are reached in a test's time
 const FAST = { idle: 300, work: 300, hard: 1500, hardWork: 1500, mux: 300, prompt: 300 };
 
@@ -673,6 +674,65 @@ test('#65 with no grid to tell the guest, the re-sync is the clock and clear', a
                  /^sudo date -u -s @\d+ >\/dev\/null 2>&1; sudo hwclock --systohc >\/dev\/null 2>&1; clear$/);
     assert.deepEqual(p.seeded, []);
   }
+});
+
+test('#65 a re-sync that never finishes ends in a warning, not a ✓', async () => {
+  // The monitor part worked, so the checkpoint is saved, or the machine is
+  // back at it, but the clock and the tty size were never put right: a sudo
+  // asking for a password holds the line before its `clear`, and with no
+  // prompt after loadvm the line is not typed at all.
+  // [what, guest options from the start, set after a first checkpoint, steps]
+  const cases = [
+    ['save', { sudoAsks: true }, null,
+     ['shell: ', 'mux: monitor', 'monitor: stop', 'monitor: ' + LAYER, 'monitor: savevm bashtion',
+      'monitor: cont', 'mux: serial', 'shell: re-sync']],
+    ['back, the re-sync hangs', {}, (p) => { p.guest.opts.sudoAsks = true; },
+     ['mux: monitor', 'monitor: stop', 'monitor: loadvm bashtion', 'monitor: cont', 'mux: serial',
+      'shell: ', 'shell: re-sync']],
+    ['back, no prompt', {}, (p) => { p.guest.prompt = () => {}; },
+     ['mux: monitor', 'monitor: stop', 'monitor: loadvm bashtion', 'monitor: cont', 'mux: serial',
+      'shell: ']],
+  ];
+  for (const [what, opts, stop, want] of cases) {
+    const p = machine(opts);
+    p.win.__bwTimeouts = FAST;
+    let at = null;
+    if (stop) {
+      assert.equal(await p.SERIALFS.checkpoint(), true, what);
+      assert.equal(findOverlay(p, 'bwOvTitle').textContent, '✓ Checkpoint saved', what);
+      at = p.SERIALFS.checkpointTime();
+      stop(p);
+    }
+    const from = p.guest.trace.length;
+    assert.equal(await (stop ? p.SERIALFS.rollback() : p.SERIALFS.checkpoint()), true, what);
+    assert.deepEqual(steps(p, from), want, what);
+    const when = p.SERIALFS.checkpointTime();
+    assert.ok(when, what);
+    if (at) assert.equal(when.getTime(), at.getTime(), what);
+    assert.equal(findOverlay(p, 'bwOvTitle').textContent, stop
+      ? 'Back at your checkpoint, but the clock could not be set'
+      : 'Checkpoint saved, but the clock could not be set', what);
+    assert.equal(findOverlay(p, 'bwOvSub').textContent, UNSYNCED, what);
+    assert.equal(findOverlay(p, 'bwOvBar').style.background, '#e0a93c', what);
+    assert.equal(p.status.at(-1), (stop ? 'back at your checkpoint from ' : 'checkpoint saved at ') +
+                 hhmm(when) + ' — clock not set', what);
+    assert.equal(p.guest.running, true, what);
+    assert.equal(p.guest.focus, 'serial', what);
+    assert.equal(p.term.focused, true, what);
+    assert.equal(p.SERIALFS.isBusy(), false, what);
+  }
+});
+
+test('#65 a failed checkpoint stays a failure, even after a re-sync that never finishes', async () => {
+  const p = machine({ sudoAsks: true, savevmFails: VIRTFS });
+  p.win.__bwTimeouts = FAST;
+  assert.equal(await p.SERIALFS.checkpoint(), false);
+  assert.equal(steps(p).at(-1), 'shell: re-sync');
+  assert.equal(findOverlay(p, 'bwOvTitle').textContent, 'Could not save a checkpoint');
+  assert.equal(findOverlay(p, 'bwOvSub').textContent, VIRTFS + '.');
+  assert.equal(findOverlay(p, 'bwOvBar').style.background, '#e0663c');
+  assert.equal(p.SERIALFS.checkpointTime(), null);
+  assert.deepEqual(p.status, []);
 });
 
 test('#65 bracketed paste is turned off before the switch, so the mux sees Ctrl-A c', async () => {

@@ -330,6 +330,14 @@ export class FakeGuest {
     // the tty ECHO flag says. This is the echo markers must not match.
     this.write(line + '\r\n');
 
+    // `sudoAsks`: the user took NOPASSWD away, so a line that starts with
+    // `sudo` stops at sudo-rs's password prompt, which reads the tty, and
+    // nothing after it on the line runs.
+    if (this.opts.sudoAsks && /^sudo /.test(line)) {
+      this.write('[sudo: authenticate] Password: ');
+      this.hold();
+      return;
+    }
     if (/^\s*$/.test(line)) return this.prompt();
     if (/(^|; )clear$/.test(line)) { this.write('\x1b[H\x1b[2J'); return this.prompt(); }
 

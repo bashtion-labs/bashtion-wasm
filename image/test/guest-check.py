@@ -244,6 +244,23 @@ def run_checks(con):
     # the one screen everyone sees names the way to list what can be installed
     rc, out = capture(con, "grep -c 'ls /srv/apt' /etc/motd")
     check('#56 the motd says how to list what apt can install', out.strip() == '1', out)
+    # Each root `apt-get update` runs ubuntu-pro-client's
+    # APT::Update::Pre-Invoke hook (/etc/apt/apt.conf.d/20apt-esm-hook.conf),
+    # which starts apt-news.service and esm-cache.service with --no-block.
+    # They are python3 oneshots that outlive apt-get, and with the image's
+    # bytecode caches deleted their first run writes about 190 .pyc files
+    # to /. The #70 df delta measured them (+73728 and +131072 bytes with
+    # file=0:0, run 39168000877), so no later check may start before they
+    # finish: sync cannot stop a process that is still writing. A running
+    # oneshot is "activating", for which is-active exits non-zero, so the loop
+    # reads the state words. One sudo, as root: systemd's private socket, and
+    # sudo's own logging lands before #70 measures.
+    rc, out = capture(con, "sudo bash -c 't=$SECONDS; while systemctl is-active "
+                           "apt-news.service esm-cache.service | grep -qx -e activating "
+                           "-e deactivating && [ $((SECONDS - t)) -lt 300 ]; do sleep 1; done; "
+                           "echo \"waited=$((SECONDS - t))s\" $(systemctl show -p Id "
+                           "-p LoadState -p ActiveState apt-news.service esm-cache.service)'", 360)
+    print('     #56 apt-news and esm-cache: %s' % out.replace('\n', ' | ')[:600], flush=True)
 
     # ---- #54 manual pages ------------------------------------------------
     rc, out = capture(con, 'man -w ls')
@@ -294,9 +311,11 @@ def run_checks(con):
         # The refusal arrives as SIGXFSZ, whose default action dumps core into
         # the cwd - on / - unless the soft core limit is 0, as Ubuntu's systemd
         # sets it. A core there would also land in the #50 clean-pack check.
+        # df counts ext4's delayed-allocation data when written, and the extent
+        # blocks that map it at writeback: sync keeps those out of the window.
         rc, out = capture(con,
-                          'b=$(df --output=used -B1 / | tail -1); '
-                          '%sfallocate -l 10G %s; r=$?; '
+                          'sync; b=$(df --output=used -B1 / | tail -1); '
+                          '%sfallocate -l 10G %s; r=$?; sync; '
                           'a=$(df --output=used -B1 / | tail -1); '
                           'echo "rc=$r delta=$((a - b)) '
                           'file=$(stat -c %%s:%%b %s 2>/dev/null || echo absent) '

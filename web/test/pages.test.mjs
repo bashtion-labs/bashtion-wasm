@@ -44,6 +44,26 @@ test('the deployed page stays CSP-clean: no inline script, no inline handler', (
   assert.ok(!/\son[a-z]+\s*=/.test(html), 'inline event handler would need unsafe-inline');
 });
 
+// boot.js finds everything it wires by id; a lost id is a TypeError at
+// startup, or a button that silently does nothing.
+test('every id boot.js looks up is on the deployed page', () => {
+  const ids = [...read('fork/boot.js').matchAll(/getElementById\(\s*['"]([^'"]+)['"]\s*\)/g)]
+    .map((m) => m[1]);
+  assert.ok(ids.length > 0, 'boot.js looks up no ids');
+  const html = read('fork/index.html');
+  for (const id of new Set(ids)) {
+    assert.ok(new RegExp(`\\sid="${id}"`).test(html), `fork/index.html has no id="${id}"`);
+  }
+});
+
+// The grid is refit only on a window resize, so the control bar has to take
+// its own room above the terminal. A fixed one that wrapped on a narrow
+// window went under xterm's z-indexed canvases, and its lower buttons could
+// not be clicked (#65 follow-up).
+test('the deployed page pins nothing over the terminal: the control bar stays in the flow', () => {
+  assert.ok(!/position\s*:\s*fixed/.test(read('fork/index.html')));
+});
+
 test('the dev page inline module is syntactically valid', () => {
   const m = read('index.html').match(/<script type="module">([\s\S]*?)<\/script>/);
   assert.ok(m, 'dev page has no inline module');

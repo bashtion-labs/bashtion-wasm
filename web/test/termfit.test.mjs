@@ -104,7 +104,8 @@ test('xterm 4: a desktop window resizes the grid off 80x24', () => {
 });
 
 test('xterm 4: a phone-width window gets fewer than 80 columns', () => {
-  // a 390x844 window less the 30 px control bar
+  // the box a 390 px wide window leaves under a control bar; the bar's height
+  // there depends on the width, and only the arithmetic is checked here
   const t = term4(9, 17, 80, 24, 15);
   assert.deepEqual(TERMFIT.measure(t, box(390, 814), win), { cols: 41, rows: 47 });
 });

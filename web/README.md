@@ -26,7 +26,10 @@ JS bundle (`out.js`) plus a `.wasm` and a pthread worker.
   decoding each chunk separately replaced every multi-byte sequence that straddled a
   boundary with U+FFFD.
 - `termfit.js` — sizes the xterm grid to the window and produces the `stty rows R cols C`
-  the guest has to be told, since a serial console carries no window-size signal.
+  the guest has to be told, since a serial console carries no window-size signal. It reads
+  the cell size from either xterm's renderer: `actualCellWidth`/`actualCellHeight` from
+  xterm 4.19.0, which the shipped page (`fork/index.html`) gets from the engine's `vendor/`,
+  or `css.cell` from `@xterm/xterm` 5.5.0, which the upstream-lane page (`index.html`) gets.
 - `serialfs.js` — Save/Load of the session. The engine's real filesystem lives in the wasm
   worker where page JavaScript cannot see it, so transfers ride the serial console. What is
   captured is decided guest-side by `/usr/local/sbin/bashtion-{pack,unpack}` (source in
@@ -68,7 +71,12 @@ JS bundle (`out.js`) plus a `.wasm` and a pthread worker.
   in `window.__serial` and a prompt has followed: a checkpoint taken between two of bash's
   prompts gives back a stale prompt first. The confirmation before going back is in
   `fork/boot.js`. See the README, "Checkpoints".
-- `toolchain-extra.dockerfile` — layers xterm-pty into the engine's build image.
+- `toolchain-extra.dockerfile` — the upstream wasm64 lane's toolchain (`make toolchain`,
+  `wasm64-experimental.yml`), not the shipped engine's: it layers xterm-pty 0.12.0 and
+  `@xterm/xterm` 5.5.0 into that lane's build image, and `make pack` vendors them for
+  `index.html`. The shipped engine's `vendor/` comes from the fork's own Dockerfile
+  (`build.yml`, job `qemu-engine`): `xterm-pty` 0.10.1 and, through its `^4.16.0`
+  dependency, xterm 4.19.0.
 - `xterm-pty.conf` — the COOP/COEP response headers cross-origin isolation requires.
 
 ## Serving

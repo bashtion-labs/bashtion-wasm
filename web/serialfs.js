@@ -470,6 +470,7 @@ const SERIALFS = (() => {
   const SAVEVM = 'savevm bashtion';
   const LOADVM = 'loadvm bashtion';
   const NO_ANSWER = 'The machine did not answer.';
+  const UNSYNCED = 'The time inside the machine may be wrong, and so may the screen size.';
 
   let switches = 0;        // Ctrl-A c sent by the page: odd means the mux is on the monitor
   let paused = false;      // `stop` answered, and no `cont` since
@@ -571,6 +572,13 @@ const SERIALFS = (() => {
   //
   // The clock commands are the two in bootscreen.js's handover(), repeated
   // rather than shared: this file loads first, and its tests load it alone.
+  //
+  // Resolves true once the line has run, false when the wait gave up. The
+  // callers then report the checkpoint, or the return to it, as done with a
+  // warning rather than as failed: the monitor part worked. The line is never
+  // typed again. Its output is discarded, so the page cannot tell which of its
+  // commands ran, and typed again it would land in whatever stopped it - a
+  // `sudo` asking for a password would read it as the password.
   async function resync() {
     const cmds = [
       'sudo date -u -s @' + Math.floor(Date.now() / 1000) + ' >/dev/null 2>&1',
@@ -595,12 +603,13 @@ const SERIALFS = (() => {
     //
     // Not tidy()'s 8 s: the two sudos print nothing for 8-17 s, and longest
     // straight after a checkpoint (15-17 s, measured).
-    await waitFor(() => {
+    const cleared = await waitFor(() => {
       const raw = (window.__serial || '').slice(t0);
       const at = raw.search(/\x1b\[[0-9;]*J/);
       return at >= 0 && clean(raw.slice(at)).match(/[$#] ?$/m);
     }, t0);
     await sleep(200);
+    return !!cleared;
   }
 
   async function checkpoint() {
@@ -642,9 +651,15 @@ const SERIALFS = (() => {
       }
       const resumed = await leave(true);
       why = why || resumed;
-      if (!paused) await resync();
+      const unsynced = !paused && !await resync();
       focus();
       if (why) { ov.fail('Could not save a checkpoint', why); return false; }
+      // Only after the failure: whatever the re-sync did, a failure wins.
+      if (unsynced) {
+        ov.warn('Checkpoint saved, but the clock could not be set', UNSYNCED);
+        status('checkpoint saved at ' + hhmm(savedAt) + ' — clock not set');
+        return true;
+      }
       ov.done('✓ Checkpoint saved');
       status('checkpoint saved at ' + hhmm(savedAt));
       return true;
@@ -691,8 +706,15 @@ const SERIALFS = (() => {
           '\x1b[?25h\x1b[0m\x1b[?1l\x1b>\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l', r));
       }
       // The checkpoint was taken at a prompt, so there is one to come back to.
-      if (await ensureShell()) await resync();
+      // With none, the line is not typed blind - it would land in whatever has
+      // the terminal - and the warning says the clock was not set.
+      const unsynced = !(await ensureShell() && await resync());
       focus();
+      if (unsynced) {
+        ov.warn('Back at your checkpoint, but the clock could not be set', UNSYNCED);
+        status('back at your checkpoint from ' + hhmm(savedAt) + ' — clock not set');
+        return true;
+      }
       ov.done('✓ Back at your checkpoint');
       status('back at your checkpoint from ' + hhmm(savedAt));
       return true;

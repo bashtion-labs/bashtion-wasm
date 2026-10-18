@@ -163,6 +163,11 @@ not stop, going back still works.
   running as before, and so does your earlier checkpoint, unless the window says it is gone.
 - If the window says "Could not go back to your checkpoint" and tells you to reload, reload the
   page. The top of the page says so too, after the window has gone.
+- If the window says "Checkpoint saved, but the clock could not be set" or "Back at your
+  checkpoint, but the clock could not be set", the checkpoint still worked: it is saved, or you
+  are back at it. Only the time inside the machine may be wrong, and the screen may not fit the
+  window. See "The clock looks wrong" under Quick fixes, and "The window size" under Things to
+  know.
 
 ## Things to know
 

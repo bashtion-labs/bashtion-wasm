@@ -77,8 +77,11 @@ JS bundle (`out.js`) plus a `.wasm` and a pthread worker.
   current grid, `clear` - because the guest clock stood still while the VM was stopped and
   `loadvm` turns the clock and the tty size back, and it is done only once `clear`'s erase is
   in `window.__serial` and a prompt has followed: a checkpoint taken between two of bash's
-  prompts gives back a stale prompt first. The confirmation before going back is in
-  `fork/boot.js`. See the README, "Checkpoints".
+  prompts gives back a stale prompt first. When the line never finishes (a `sudo` asking for
+  a password, say) it is never typed again, and when going back finds no prompt it is not
+  typed at all; either way the overlay is an amber warning that the clock could not be set,
+  not a ✓. The confirmation before going back is in `fork/boot.js`. See the README,
+  "Checkpoints".
 - `toolchain-extra.dockerfile` — the upstream wasm64 lane's toolchain (`make toolchain`,
   `wasm64-experimental.yml`), not the shipped engine's: it layers xterm-pty 0.12.0 and
   `@xterm/xterm` 5.5.0 into that lane's build image, and `make pack` vendors them for
@@ -168,9 +171,9 @@ browser-shaped scope and drives them against a guest mock that reproduces readli
 command reading the tty directly, and the `-nographic` mux with the HMP monitor behind it
 (Ctrl-A c, the redrawn echo, `Error:` replies, a monitor that stops answering, and a lost or
 late answer to `stop`, for a `stop` that never answered but ran), with a program that prints
-through the switch and a shell caught between two prompts. The screen model is tested against
-real console output — bash/readline, vim, nano and apt under the guest's TERM, a login shell
-with systemd's shell integration and 26.04's sudo, and QEMU's monitor — captured byte for byte
-into `test/console-captures.mjs`, and against short hand-written streams for what `atPrompt()`
-must refuse, each answer taken from the terminal behaviour it exercises rather than from the
-model. CI runs it as the `web-tests` job.
+through the switch, a shell caught between two prompts and a `sudo` that asks for a password.
+The screen model is tested against real console output — bash/readline, vim, nano and apt
+under the guest's TERM, a login shell with systemd's shell integration and 26.04's sudo, and
+QEMU's monitor — captured byte for byte into `test/console-captures.mjs`, and against short
+hand-written streams for what `atPrompt()` must refuse, each answer taken from the terminal
+behaviour it exercises rather than from the model. CI runs it as the `web-tests` job.

@@ -238,12 +238,16 @@ const SERIALFS = (() => {
     await tidy();
   }
 
-  // `hardMs` caps the whole wait, not just the silence: a program that keeps
-  // printing (`ping`, `top`) never lets the 8 s idle timer run out (#65).
-  async function ensureShell(hardMs) {
+  // Asked for 8 s at most, printing or not, for every caller: a program that
+  // keeps printing (`ping`, `top`) never lets the 8 s idle timer run out, and
+  // the overlay covers the terminal, so the user cannot reach it to stop it
+  // (#65, seen on the served page). Capped here rather than by each caller:
+  // Download and Load were once left without it and sat on "Preparing…" for
+  // up to 15 minutes.
+  async function ensureShell() {
     const t0 = serialLen();
     paste('\x15\n');                   // Ctrl-U clears any partial line, then Enter
-    return !!(await waitFor(/[$#] ?$/m, t0, 8000, hardMs));
+    return !!(await waitFor(/[$#] ?$/m, t0, 8000, ms('prompt', 8000)));
   }
 
   // ---- save --------------------------------------------------------------
@@ -584,10 +588,8 @@ const SERIALFS = (() => {
     try {
       ov.show('Preparing…');
       // A prompt is required so that going back to this checkpoint lands at
-      // one, where the re-sync can be typed. Asked for 8 s at most, printing
-      // or not: the overlay covers the terminal, so a user whose `ping` is
-      // still running cannot reach it to stop it (seen on the served page).
-      if (!await ensureShell(ms('prompt', 8000))) {
+      // one, where the re-sync can be typed.
+      if (!await ensureShell()) {
         ov.fail('Click the terminal, wait for the $ prompt, then try again');
         return false;
       }
@@ -668,7 +670,7 @@ const SERIALFS = (() => {
           '\x1b[?25h\x1b[0m\x1b[?1l\x1b>\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l', r));
       }
       // The checkpoint was taken at a prompt, so there is one to come back to.
-      if (await ensureShell(ms('prompt', 8000))) await resync();
+      if (await ensureShell()) await resync();
       focus();
       ov.done('✓ Back at your checkpoint');
       status('back at your checkpoint from ' + hhmm(savedAt));

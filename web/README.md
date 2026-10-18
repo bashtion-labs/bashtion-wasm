@@ -40,10 +40,12 @@ JS bundle (`out.js`) plus a `.wasm` and a pthread worker.
   goes through readline (which echoes and redisplays every line typed at a prompt whatever
   `stty -echo` says), and no marker may appear literally in the command line that emits it,
   or it matches its own echo. Blocks are acknowledged one at a time, and both directions
-  carry a byte count and a POSIX `cksum`. Behind a progress overlay. The last line
-  `bashtion-unpack` prints comes back either way: on failure it is the reason, and on
-  success it says whether the whole session was restored or - for an archive from a
-  different image build - the home directory only, which the page reports as such.
+  carry a byte count and a POSIX `cksum`. Behind a progress overlay. A transfer starts only
+  once a shell prompt answers, asked for with an 8 s hard cap so that a program that keeps
+  printing cannot hold the overlay up. The last line `bashtion-unpack` prints comes back
+  either way: on failure it is the reason, and on success it says whether the whole session
+  was restored or - for an archive from a different image build - the home directory only,
+  which the page reports as such.
 
   It also takes checkpoints of the whole machine and goes back to them (#65), through QEMU's
   HMP monitor on the other side of the `-nographic` mux rather than through the shell, behind
@@ -61,7 +63,7 @@ JS bundle (`out.js`) plus a `.wasm` and a pthread worker.
   `loadvm bashtion` and `cont` to go back, with `info snapshots` after a failed `savevm` to
   see whether the earlier checkpoint survived. `cont` always follows a `stop` that worked,
   except after a failed `loadvm`, which leaves the VM stopped. Saving needs a shell prompt,
-  asked for with an 8 s hard cap so a program that keeps printing cannot hold the overlay up;
+  asked for with the same 8 s cap so a program that keeps printing cannot hold the overlay up;
   going back does not, since it is for when a program has the terminal or the guest is stuck.
   If that program turned bracketed paste on, the page turns it off with `ESC[?2004l` before
   switching, or `xterm.paste()` would wrap Ctrl-A in `ESC[200~`...`ESC[201~` and the mux

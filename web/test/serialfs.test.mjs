@@ -205,7 +205,7 @@ test('#49 a second load while one is running leaves the overlay alone', async ()
 test('nothing is typed at the guest when there is no shell prompt', async () => {
   const p = sfs({});
   p.storage.files.set('bashtion-work.tgz', archive(2000, 43));
-  p.win.__bwTimeouts = { idle: 200, work: 200, hard: 800, hardWork: 800 };
+  p.win.__bwTimeouts = { idle: 200, work: 200, hard: 800, hardWork: 800, prompt: 800 };
   // a guest that never shows a prompt: ensureShell must fail and we must not
   // inject shell text into whatever owns the tty (vim, less, a heredoc)
   p.guest.prompt = () => {};
@@ -551,6 +551,50 @@ test('#65 saving while a program keeps printing gives up in seconds, typing noth
     assert.equal(p.guest.focus, 'serial');
     assert.equal(p.SERIALFS.isBusy(), false);
   } finally { clearInterval(program.timer); clearTimeout(late); }
+});
+
+// Download my work and Load work ask for the prompt through the same
+// ensureShell(), so the same printing program must not hold them up either.
+// Only the prompt cap is short, so nothing else can end the wait in time.
+// Resolves with what `click` resolved with.
+async function transferWhilePrinting(p, what, click) {
+  p.win.__bwTimeouts = { idle: 300, work: 300, hard: 60000, hardWork: 60000, prompt: 300 };
+  const program = p.guest.spew('64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.1 ms\r\n', 20);
+  let late;
+  try {
+    const r = await Promise.race([
+      click(),
+      new Promise((_, rej) => { late = setTimeout(
+        () => rej(new Error(what + ' was still waiting for a prompt after 5 s')), 5000); }),
+    ]);
+    assert.equal(findOverlay(p, 'bwOvTitle').textContent,
+                 'Click the terminal, wait for the $ prompt, then try again');
+    assert.equal(findOverlay(p, 'bwOvSub').textContent, 'You can keep working; nothing was changed.');
+    assert.equal(findOverlay(p, 'bwOvBar').style.background, '#e0663c');
+    assert.equal(program.got, '\x15\n',
+                 'typed more than Ctrl-U and Enter into the printing program: ' + JSON.stringify(program.got));
+    assert.deepEqual(p.guest.commands, []);
+    assert.equal(p.guest.restored, null);
+    assert.equal(p.SERIALFS.isBusy(), false);
+    return r;
+  } finally { clearInterval(program.timer); clearTimeout(late); }
+}
+
+test('#65 Download my work while a program keeps printing gives up in seconds, typing nothing more', async () => {
+  const p = sfs({ archive: archive(3000), writeDelayMs: 2 });
+  await transferWhilePrinting(p, 'download()', () => p.SERIALFS.download());
+  assert.equal(p.storage.files.size, 0, 'a browser copy was written');
+});
+
+test('#65 Load work while a program keeps printing gives up in seconds, typing nothing more', async () => {
+  // the browser copy, then a chosen file (Load from a file…)
+  const p = sfs({ writeDelayMs: 2 });
+  p.storage.files.set('bashtion-work.tgz', archive(2000, 43));
+  assert.equal(await transferWhilePrinting(p, 'load()', () => p.SERIALFS.load()), false);
+  const chosen = archive(1800, 4);
+  const file = { async arrayBuffer() { return chosen.buffer.slice(0); } };
+  const q = sfs({ writeDelayMs: 2 });
+  assert.equal(await transferWhilePrinting(q, 'load(file)', () => q.SERIALFS.load(file)), false);
 });
 
 test('#65 a Ctrl-A the user left pending in the mux does not turn the switch around', async () => {

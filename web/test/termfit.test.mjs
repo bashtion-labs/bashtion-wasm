@@ -37,6 +37,21 @@ const term = (cw, ch, cols = 80, rows = 24, bar = 0) => ({
   _core: { _renderService: { dimensions: { css: { cell: { width: cw, height: ch } } } },
            viewport: { scrollBarWidth: bar } },
 });
+// The xterm 4.19.0 shape the shipped page really gets: all twelve fields, no
+// `css`. At device pixel ratio 2 the `scaled*` device pixels are twice the CSS
+// pixel `actual*` ones, so dividing by the wrong pair gives a different grid.
+const term4 = (cw, ch, cols = 80, rows = 24, bar = 0, dpr = 2) => ({
+  cols, rows, resized: null,
+  resize(c, r) { this.cols = c; this.rows = r; this.resized = { c, r }; },
+  _core: { _renderService: { dimensions: {
+             scaledCharWidth: cw * dpr, scaledCharHeight: ch * dpr,
+             scaledCellWidth: cw * dpr, scaledCellHeight: ch * dpr,
+             scaledCharLeft: 0, scaledCharTop: 0,
+             scaledCanvasWidth: cols * cw * dpr, scaledCanvasHeight: rows * ch * dpr,
+             canvasWidth: cols * cw, canvasHeight: rows * ch,
+             actualCellWidth: cw, actualCellHeight: ch } },
+           viewport: { scrollBarWidth: bar } },
+});
 const box = (w, h) => ({ clientWidth: w, clientHeight: h });
 const win = { getComputedStyle: () => ({ paddingLeft: '0px', paddingRight: '0px',
                                          paddingTop: '0px', paddingBottom: '0px' }) };
@@ -76,6 +91,32 @@ test('#60 an unchanged shape does not churn the guest', () => {
 
 test('#60 the guest is told in the only language a serial console has', () => {
   assert.equal(TERMFIT.stty({ cols: 160, rows: 43 }), 'stty rows 43 cols 160');
+});
+
+// ------------------------------------------------- the shipped xterm 4.19.0
+test('xterm 4: a desktop window resizes the grid off 80x24', () => {
+  const t = term4(9, 17, 80, 24, 15);
+  const d = TERMFIT.fit(t, box(1280, 770), win);
+  assert.deepEqual(d, { cols: 140, rows: 45 });
+  assert.deepEqual(t.resized, { c: 140, r: 45 });
+  assert.equal(t.cols, 140);
+  assert.equal(t.rows, 45);
+});
+
+test('xterm 4: a phone-width window gets fewer than 80 columns', () => {
+  // a 390x844 window less the 30 px control bar
+  const t = term4(9, 17, 80, 24, 15);
+  assert.deepEqual(TERMFIT.measure(t, box(390, 814), win), { cols: 41, rows: 47 });
+});
+
+test('xterm 4: before the first measurement the grid is left alone', () => {
+  const t = term4(0, 0);
+  t.resize = () => { throw new Error('must not resize'); };
+  const dims = t._core._renderService.dimensions;
+  assert.equal(Object.keys(dims).length, 12);
+  assert.ok(Object.values(dims).every((v) => v === 0));
+  assert.equal(TERMFIT.measure(t, box(1280, 770), win), null);
+  assert.equal(TERMFIT.fit(t, box(1280, 770), win), null);
 });
 
 

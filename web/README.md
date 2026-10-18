@@ -62,9 +62,12 @@ JS bundle (`out.js`) plus a `.wasm` and a pthread worker.
   refuses the raw root disk), `savevm bashtion` and `cont` to save, or `stop`,
   `loadvm bashtion` and `cont` to go back, with `info snapshots` after a failed `savevm` to
   see whether the earlier checkpoint survived. `cont` always follows a `stop` that worked,
-  except after a failed `loadvm`, which leaves the VM stopped. Saving needs a shell prompt,
-  asked for with the same 8 s cap so a program that keeps printing cannot hold the overlay up;
-  going back does not, since it is for when a program has the terminal or the guest is stuck.
+  except after a failed `loadvm`, which leaves the VM stopped. A `stop` that never answered
+  may have stopped the VM anyway (QEMU runs it on reading the line), and `cont` is harmless on
+  a running guest, so one `cont` follows it too, waited for 8 s at most and never retried;
+  none is sent once `loadvm` was. Saving needs a shell prompt, asked for with the same 8 s cap
+  so a program that keeps printing cannot hold the overlay up; going back does not, since it
+  is for when a program has the terminal or the guest is stuck.
   If that program turned bracketed paste on, the page turns it off with `ESC[?2004l` before
   switching, or `xterm.paste()` would wrap Ctrl-A in `ESC[200~`...`ESC[201~` and the mux
   would never see it. After going back it also writes xterm the modes a running program may
@@ -163,11 +166,11 @@ alone decides.
 `node --test web/test/*.test.mjs` loads the real page scripts (no bundler, no imports) into a
 browser-shaped scope and drives them against a guest mock that reproduces readline's echo, a
 command reading the tty directly, and the `-nographic` mux with the HMP monitor behind it
-(Ctrl-A c, the redrawn echo, `Error:` replies and a monitor that stops answering), with a
-program that prints through the switch and a shell caught between two prompts. The screen
-model is tested against real console output —
-bash/readline, vim, nano and apt under the guest's TERM, a login shell with systemd's shell
-integration and 26.04's sudo, and QEMU's monitor — captured byte for byte into
-`test/console-captures.mjs`, and against short hand-written streams for what `atPrompt()` must
-refuse, each answer taken from the terminal behaviour it exercises rather than from the model.
-CI runs it as the `web-tests` job.
+(Ctrl-A c, the redrawn echo, `Error:` replies, a monitor that stops answering, and a lost or
+late answer to `stop`, for a `stop` that never answered but ran), with a program that prints
+through the switch and a shell caught between two prompts. The screen model is tested against
+real console output — bash/readline, vim, nano and apt under the guest's TERM, a login shell
+with systemd's shell integration and 26.04's sudo, and QEMU's monitor — captured byte for byte
+into `test/console-captures.mjs`, and against short hand-written streams for what `atPrompt()`
+must refuse, each answer taken from the terminal behaviour it exercises rather than from the
+model. CI runs it as the `web-tests` job.

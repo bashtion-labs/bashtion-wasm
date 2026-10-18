@@ -451,6 +451,14 @@ const SERIALFS = (() => {
   //    have put the disks back and only part of the memory, and a machine
   //    running on that can corrupt the very work the user would then try to
   //    download: stopped and honest is better.
+  //  * One short `cont` after a `stop` that never answered, too. QEMU runs
+  //    `stop` as soon as it reads the line, so one whose prompt was lost, or
+  //    came after the page gave up, may have stopped the machine all the
+  //    same; and `cont` succeeds on a running guest, so it costs nothing when
+  //    `stop` never ran. Short, as in mux(), and capped however much arrives:
+  //    an engine that lost one answer may lose this one too, and a running
+  //    guest's output would keep an idle timer alive for the 15-minute cap.
+  //    Never once `loadvm` has been sent, as above.
   //  * The bracketed-paste reset. xterm.paste() wraps its text in
   //    ESC[200~ ... ESC[201~ whenever the program in front has asked for it,
   //    and the mux then sees ESC straight after Ctrl-A and never switches:
@@ -465,6 +473,7 @@ const SERIALFS = (() => {
 
   let switches = 0;        // Ctrl-A c sent by the page: odd means the mux is on the monitor
   let paused = false;      // `stop` answered, and no `cont` since
+  let unanswered = false;  // `stop` sent, its prompt not seen: it may have stopped the machine anyway
   let layered = false;     // the qcow2 layer is over root
   let savedAt = null;      // when the snapshot in the slot was taken
 
@@ -516,27 +525,39 @@ const SERIALFS = (() => {
   // a whole `Error: ...` line among them - can land between the echo and the
   // prompt (seen on the served page). And `stop` has nothing to fail on here:
   // it succeeds even on a stopped VM, and QEMU 8.2 refuses it only during a
-  // dump. Its prompt alone means stopped, so `cont` is never skipped. `cmd` is
-  // always one of the constants here: nothing the user or the guest supplies
-  // goes into one.
-  async function run(cmd, idleMs) {
+  // dump. Its prompt alone means stopped, so `cont` is never skipped. And it
+  // counts as unanswered from before the paste, so one whose prompt never
+  // comes, or whose paste throws, is followed by a short `cont` too (see
+  // leave()). `hardMs` caps a wait however much the guest prints, as in
+  // mux(). `cmd` is always one of the constants here: nothing the user or the
+  // guest supplies goes into one.
+  async function run(cmd, idleMs, hardMs) {
     const t0 = serialLen();
+    if (cmd === 'stop') unanswered = true;
     paste(cmd + '\n');
-    if (!await waitFor(/\(qemu\) /, t0, idleMs)) return { why: NO_ANSWER };
+    if (!await waitFor(/\(qemu\) /, t0, idleMs, hardMs)) return { why: NO_ANSWER };
     const reply = serialFrom(t0);
     const err = cmd !== 'stop' && reply.match(/(?:^|\n)Error: ([^\r\n]*)\r*\n\(qemu\) /);
     if (err) return { why: sentence(err[1]) };
-    if (cmd === 'stop') paused = true;
+    if (cmd === 'stop') { paused = true; unanswered = false; }
     if (cmd === 'cont') paused = false;
     return { why: null, reply };
   }
 
   // Back to the serial side, if the page is in the monitor, resuming the
-  // machine on the way out if the page stopped it and may. Resolves why
-  // `cont` failed, or null.
+  // machine on the way out if the page stopped it, or sent a `stop` that
+  // never answered, and may. Resolves why `cont` failed, or null. `unanswered`
+  // is cleared before the short `cont` goes, so that is tried once, answered
+  // or not, even if its paste throws, and never carries into the next
+  // operation. It is tested before `paused`, which an earlier `cont` that
+  // never answered leaves set: that would give this one the long wait.
   async function leave(resume) {
     if (!(switches % 2)) return null;
-    const why = paused && resume ? (await run('cont')).why : null;
+    const short = unanswered;
+    unanswered = false;
+    let why = null;
+    if (short && resume) why = (await run('cont', ms('mux', 8000), ms('mux', 8000))).why;
+    else if (paused && resume) why = (await run('cont')).why;
     await mux();
     return why;
   }

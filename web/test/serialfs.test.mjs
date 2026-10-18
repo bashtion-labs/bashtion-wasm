@@ -707,13 +707,18 @@ test('#65 the mux is left on the serial side and the terminal focused, however i
     ['save', {}, true],
     ['save', { layerFails: 'Could not open backing file' }, true],
     ['save', { savevmFails: VIRTFS }, true],
+    // the switch never answered: no `stop`, so no `cont`
     ['save', { monitorHangs: true }, true],
+    // `stop` never answered, whether it hung before running or ran and its
+    // prompt was lost: one short `cont` follows either way
     ['save', { monitorHangs: 'stop' }, true],
+    ['save', { stopPromptLost: true }, true],
     // took `stop`, then hung: cont is still sent, but nothing answers it
     ['save', { monitorHangs: 'savevm bashtion' }, false],
     ['back', {}, true],
     ['back', { loadvmFails: "Snapshot 'bashtion' does not exist in one or more devices" }, false],
     ['back', { monitorHangs: 'stop' }, true],
+    ['back', { stopPromptLost: true }, true],
     ['back', { monitorHangs: 'loadvm bashtion' }, false],
   ];
   for (const [op, opts, running] of cases) {
@@ -737,6 +742,87 @@ test('#65 the mux is left on the serial side and the terminal focused, however i
     assert.equal(p.SERIALFS.isBusy(), false, what);
     assert.equal(p.guest.running, running, what);
     if (opts.monitorHangs === 'savevm bashtion') assert.equal(p.guest.monitor.at(-1), 'cont', what);
+    if (opts.monitorHangs === 'stop' || opts.stopPromptLost) {
+      assert.deepEqual(p.guest.monitor.slice(-2), ['stop', 'cont'], what);
+    }
+    if (opts.monitorHangs === true) assert.deepEqual(p.guest.monitor, [], what);
+  }
+});
+
+test('#65 a stop that never answers is followed by one short cont, so the machine runs on', async () => {
+  // QEMU runs `stop` as soon as it reads the line, so a prompt that is lost,
+  // or lands after the page has given up, leaves the machine stopped unless
+  // the page sends `cont` anyway.
+  for (const op of ['save', 'back']) {
+    for (const lost of [true, 1000]) {
+      const what = op + ' ' + JSON.stringify({ stopPromptLost: lost });
+      const p = machine();
+      p.win.__bwTimeouts = FAST;
+      assert.equal(await p.SERIALFS.checkpoint(), true, what);
+      const at = p.SERIALFS.checkpointTime();
+      p.guest.opts.stopPromptLost = lost;
+      const from = p.guest.trace.length;
+      const out = p.guest.out.length;
+      assert.equal(await (op === 'save' ? p.SERIALFS.checkpoint() : p.SERIALFS.rollback()), false, what);
+      // `stop` went before the call returned, so its late prompt has landed by now
+      if (lost !== true) await new Promise((r) => setTimeout(r, lost));
+      // the switch's prompt and cont's, and the late one of stop
+      assert.equal(p.guest.out.slice(out).filter((s) => s === '(qemu) ').length,
+                   lost === true ? 2 : 3, what);
+      assert.deepEqual(steps(p, from), op === 'save'
+        ? ['shell: ', 'mux: monitor', 'monitor: stop', 'monitor: cont', 'mux: serial', 'shell: re-sync']
+        : ['mux: monitor', 'monitor: stop', 'monitor: cont', 'mux: serial'], what);
+      assert.equal(p.guest.running, true, what);
+      assert.equal(findOverlay(p, 'bwOvTitle').textContent, op === 'save'
+        ? 'Could not save a checkpoint' : 'Could not go back to your checkpoint', what);
+      assert.equal(findOverlay(p, 'bwOvSub').textContent, 'The machine did not answer.', what);
+      assert.equal(p.guest.focus, 'serial', what);
+      assert.equal(p.term.focused, true, what);
+      assert.equal(p.SERIALFS.isBusy(), false, what);
+      assert.equal(p.SERIALFS.checkpointTime().getTime(), at.getTime(), what);
+    }
+  }
+});
+
+test('#65 the cont after a stop that never answers is sent once and waits only briefly, even while the guest prints', async () => {
+  // A `stop` that never ran leaves the guest running, and what it prints
+  // would keep an idle timer alive for the 15-minute cap: only the short cap
+  // ends the wait. Here the monitor hangs before `stop`, so `cont` goes
+  // unanswered too, and the chatter starts as it is sent. `stale`: an earlier
+  // Save's `cont` ran but its prompt was lost, so the page still thinks the
+  // machine is stopped from then, and must not give this `cont` the long wait.
+  for (const op of ['save', 'back']) {
+    for (const stale of [false, true]) {
+      const what = op + (stale ? ' (after a cont that never answered)' : '');
+      const p = machine();
+      const hmp = p.guest.hmp.bind(p.guest);
+      if (stale) {
+        p.win.__bwTimeouts = FAST;
+        const write = p.guest.write.bind(p.guest);
+        p.guest.hmp = (line) => {
+          p.guest.write = (s) => { if (line !== 'cont' || s !== '(qemu) ') write(s); };
+          try { hmp(line); } finally { p.guest.write = write; }
+        };
+        // it fails, but savevm answered: there is a checkpoint to go back to
+        assert.equal(await p.SERIALFS.checkpoint(), false, what);
+        assert.equal(p.guest.running, true, what);
+      } else if (op === 'back') assert.equal(await p.SERIALFS.checkpoint(), true, what);
+      p.guest.opts.monitorHangs = 'stop';
+      p.win.__bwTimeouts = { ...FAST, hard: 60000, hardWork: 60000 };
+      let chatter = null;
+      p.guest.hmp = (line) => { if (line === 'cont' && !chatter) chatter = p.guest.startChatter(); hmp(line); };
+      const from = p.guest.monitor.length;
+      let late;
+      try {
+        const ok = await Promise.race([
+          op === 'save' ? p.SERIALFS.checkpoint() : p.SERIALFS.rollback(),
+          new Promise((_, rej) => { late = setTimeout(
+            () => rej(new Error(what + ' was still waiting for cont after 5 s')), 5000); }),
+        ]);
+        assert.equal(ok, false, what);
+        assert.deepEqual(p.guest.monitor.slice(from), ['stop', 'cont'], what);
+      } finally { if (chatter) chatter(); clearTimeout(late); }
+    }
   }
 });
 

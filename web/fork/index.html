@@ -8,16 +8,27 @@
     <style>
       html, body { height: 100%; margin: 0; background: #111; }
       body { display: flex; flex-direction: column; }
+      /* min-height 22 px plus the padding is today's 30 px one-row bar, which
+         keeps the desktop grid at 140x45. */
       #bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px;
              padding: 4px 8px 4px 10px; min-height: 22px; font: 12px system-ui; color: #9a9a9a; }
       /* 370 px: the longest #sfsStatus message ("restored your home folder
-         only - ...") measured 358 px, plus the 8 px gap, rounded up for other
-         platforms' fonts. Never more than the bar, or a phone scrolls sideways. */
-      #msgs { flex: 1 1 0; min-width: min(370px, 100%); display: flex; gap: 8px;
-              height: 18px; line-height: 18px; }
-      #status { flex: 1 1 0; min-width: 0; font-size: 13px;
+         only — system changes were left out") measured 358 px, plus the 8 px
+         gap, rounded up for other platforms' fonts. Never more than the bar, or
+         a phone scrolls sideways.
+         Squeezed under 3em, #status showed a stray "r." in front of the
+         message, so it drops out instead, gap and all: #sfsStatus comes first
+         in line-breaking order and #status wraps onto a second line, which is
+         clipped. row-reverse keeps #status on the left, flex-end puts a lone
+         message at the left edge, and wrap-reverse sends the clipped line up
+         rather than down across the buttons. */
+      #msgs { flex: 1 1 0; min-width: min(370px, 100%); display: flex;
+              flex-flow: row-reverse wrap-reverse; justify-content: flex-end; gap: 8px;
+              height: 18px; line-height: 18px; overflow: hidden; }
+      #status { flex: 1 1 0; min-width: 3em; font-size: 13px;
                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      #sfsStatus { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #sfsStatus { order: -1; flex: 0 1 auto; min-width: 0;
+                   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       #controls { display: flex; flex-wrap: wrap; gap: 4px; }
       #terminal { flex: 1 1 0; min-height: 0; background: #000; }
     </style>
@@ -35,9 +46,10 @@
       narrow window into rows that went under xterm's canvases, which carry
       their own z-index, so those buttons could not be clicked (#65 follow-up).
       The grid is refit only on a window resize, so the bar's height must
-      depend on the window width alone: the messages never wrap (they are cut
-      with an ellipsis, #status first), and when the buttons do not fit beside
-      them they wrap onto rows of their own below.
+      depend on the window width alone: the messages never wrap (#status gives
+      way first, cut with an ellipsis or, when too narrow to read, hidden), and
+      when the buttons do not fit beside them they wrap onto rows of their own
+      below.
     -->
     <div id="bar">
       <div id="msgs"><div id="status">loading bundles…</div><span id="sfsStatus"></span></div>

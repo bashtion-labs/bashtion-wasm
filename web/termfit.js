@@ -20,9 +20,20 @@ const TERMFIT = (() => {
   // xterm.js publishes no cell metrics; its own FitAddon reads exactly these
   // private renderer dimensions. Everything here is defensive, so a future
   // xterm that moves them leaves the grid alone rather than breaking the page.
+  //
+  // Two shapes, because the two pages get two xterm majors. The shipped page
+  // gets xterm 4.19.0, through the fork's xterm-pty@0.10.1 (`^4.16.0`): CSS
+  // pixels in `actualCellWidth`/`actualCellHeight`, beside `scaled*` fields in
+  // device pixels that would halve the grid on a 2x screen. The upstream-lane
+  // page gets @xterm/xterm@5.5.0 from toolchain-extra.dockerfile: `css.cell`.
+  // Reading only the xterm 5 shape returned null on the shipped page, so its
+  // grid stayed at 80x24 at every window size, with no error anywhere.
   function cell(term) {
     try {
       const d = term._core._renderService.dimensions;
+      if (d && d.actualCellWidth > 0 && d.actualCellHeight > 0) {
+        return { w: d.actualCellWidth, h: d.actualCellHeight };
+      }
       if (d && d.css && d.css.cell && d.css.cell.width > 0 && d.css.cell.height > 0) {
         return { w: d.css.cell.width, h: d.css.cell.height };
       }

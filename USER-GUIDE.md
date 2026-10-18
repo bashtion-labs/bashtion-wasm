@@ -147,8 +147,8 @@ Click **Go back to checkpoint**. The page asks you first, because going back und
 After about half a minute you see the `$` prompt again, and everything is just as it was when
 you saved the checkpoint.
 
-You do not need the `$` prompt to go back. If a command is stuck and will not stop, going back
-still works.
+You do not need the `$` prompt to go back. If a command is stuck, or keeps printing and will
+not stop, going back still works.
 
 ### Good to know
 
@@ -161,6 +161,8 @@ still works.
   why there is only one.
 - If the window says "Could not save a checkpoint", the reason is under it. Your machine keeps
   running as before, and so does your earlier checkpoint, unless the window says it is gone.
+- If the window says "Could not go back to your checkpoint" and tells you to reload, reload the
+  page. The top of the page says so too, after the window has gone.
 
 ## Things to know
 

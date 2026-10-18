@@ -42,9 +42,12 @@ JS bundle (`out.js`) plus a `.wasm` and a pthread worker.
   It also takes checkpoints of the whole machine and goes back to them (#65), through QEMU's
   HMP monitor on the other side of the `-nographic` mux rather than through the shell, behind
   the same overlay and busy latch. It switches with Ctrl-A c (blurring the terminal first, so
-  no key the user presses reaches the monitor), counts its switches so it always knows which
-  side the mux is on, and reads each reply up to the monitor's next `(qemu) `, where a line
-  `Error: <reason>` is a failure. The commands are constants: `stop`, then
+  no key the user presses reaches the monitor), preceded by Ctrl-A NUL so that a Ctrl-A the
+  user left pending in the mux cannot swallow the switch, and counts its switches so it always
+  knows which side the mux is on. Each reply is read up to the monitor's next `(qemu) `,
+  looked for anywhere after the command rather than at the end of the record, since until
+  `stop` a program can keep printing after it; an `Error: <reason>` line straight before that
+  prompt is a failure. The commands are constants: `stop`, then
   `snapshot_blkdev root /tmp/bashtion-root.qcow2 qcow2` at the first checkpoint (`savevm`
   refuses the raw root disk), `savevm bashtion` and `cont` to save, or `stop`,
   `loadvm bashtion` and `cont` to go back, with `info snapshots` after a failed `savevm` to
@@ -53,10 +56,15 @@ JS bundle (`out.js`) plus a `.wasm` and a pthread worker.
   going back does not, since it is for when a program has the terminal or the guest is stuck.
   If that program turned bracketed paste on, the page turns it off with `ESC[?2004l` before
   switching, or `xterm.paste()` would wrap Ctrl-A in `ESC[200~`...`ESC[201~` and the mux
-  would never see it. Back on the serial side it types one line at the prompt - `sudo date`,
-  `sudo hwclock --systohc`, `stty` for the current grid, `clear` - because the guest clock
-  stood still while the VM was stopped and `loadvm` turns the clock and the tty size back.
-  The confirmation before going back is in `fork/boot.js`. See the README, "Checkpoints".
+  would never see it. After going back it also writes xterm the modes a running program may
+  have left there (cursor shown, colours, cursor keys, keypad, mouse and focus reporting) -
+  only ones the screen model does not track, so the two cannot disagree. Back on the serial
+  side it types one line at the prompt - `sudo date`, `sudo hwclock --systohc`, `stty` for the
+  current grid, `clear` - because the guest clock stood still while the VM was stopped and
+  `loadvm` turns the clock and the tty size back, and it is done only once `clear`'s erase is
+  in `window.__serial` and a prompt has followed: a checkpoint taken between two of bash's
+  prompts gives back a stale prompt first. The confirmation before going back is in
+  `fork/boot.js`. See the README, "Checkpoints".
 - `toolchain-extra.dockerfile` — layers xterm-pty into the engine's build image.
 - `xterm-pty.conf` — the COOP/COEP response headers cross-origin isolation requires.
 
@@ -139,7 +147,8 @@ alone decides.
 `node --test web/test/*.test.mjs` loads the real page scripts (no bundler, no imports) into a
 browser-shaped scope and drives them against a guest mock that reproduces readline's echo, a
 command reading the tty directly, and the `-nographic` mux with the HMP monitor behind it
-(Ctrl-A c, the redrawn echo, `Error:` replies and a monitor that stops answering). The screen
+(Ctrl-A c, the redrawn echo, `Error:` replies and a monitor that stops answering), with a
+program that prints through the switch and a shell caught between two prompts. The screen
 model is tested against real console output —
 bash/readline, vim, nano and apt under the guest's TERM, a login shell with systemd's shell
 integration and 26.04's sudo, and QEMU's monitor — captured byte for byte into

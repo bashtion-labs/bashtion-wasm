@@ -168,8 +168,8 @@ Three buttons:
 - **Load work** - restores the copy this browser remembers; **Load from a file...** takes one
   you downloaded.
 
-Both hide the raw transfer behind a progress overlay and clear the scrollback afterward, so
-you see only "Saving your work..." and a completion tick, never a wall of base64.
+All three hide the raw transfer behind a progress overlay and clear the scrollback afterward,
+so you see only "Saving your work..." and a completion tick, never a wall of base64.
 
 **Save checkpoint** and **Go back to checkpoint**, next to them, keep the whole running machine
 instead of your files, and only inside the tab: see [Checkpoints](#checkpoints).
@@ -192,18 +192,21 @@ sends only constant commands, behind the same overlay and busy latch as save/loa
 
 | Step | Why |
 |---|---|
-| blur the terminal, then Ctrl-A c | Switches the mux to the monitor. With the keyboard on the terminal, a key pressed now would reach the monitor, and HMP's `q` quits the engine. If a program has turned bracketed paste on, the page turns it off first: inside `ESC[200~`...`ESC[201~` the mux sees ESC after Ctrl-A and never switches. |
-| `stop` | Nothing the guest prints can mix into the replies, and the disk layer and the snapshot are taken at one instant. |
+| blur the terminal, then Ctrl-A NUL, Ctrl-A c | Switches the mux to the monitor. With the keyboard on the terminal, a key pressed now would reach the monitor, and HMP's `q` quits the engine. If a program has turned bracketed paste on, the page turns it off first: inside `ESC[200~`...`ESC[201~` the mux sees ESC after Ctrl-A and never switches. Ctrl-A NUL clears a Ctrl-A the user left pending (readline's start-of-line key): the mux swallows it whole when nothing is held, and otherwise passes ^A and NUL to the guest instead of letting the page's Ctrl-A complete the user's pair. The monitor's `(qemu) ` is looked for anywhere after the switch, with an 8 s cap: until `stop` the guest still runs, and a program that keeps printing buries the prompt at once. |
+| `stop` | Nothing the guest prints can mix into the later replies, and the disk layer and the snapshot are taken at one instant. A reply has failed when its `Error:` line comes straight before the next `(qemu) `, so a program printing `Error: ...` lines is not mistaken for one. |
 | `snapshot_blkdev root /tmp/bashtion-root.qcow2 qcow2`, at the first checkpoint only | `savevm` refuses the raw root disk ("Device 'root' is writable but does not support snapshots"). This puts a qcow2 layer over it, backed by the raw image. The file is in the engine's Emscripten `/tmp`, not the guest's. Made at the first checkpoint, not at start, so a session that never takes one is unchanged. |
 | `savevm bashtion` | One fixed tag. `savevm` replaces a snapshot with the same tag, one slot bounds the memory, and the replaced snapshot's space is reused. |
 | `cont`, always once `stop` worked | A failed `savevm` leaves the machine as it was, so it carries on. Before that, `info snapshots` decides whether the earlier checkpoint survived: `savevm` deletes the old snapshot of the tag before writing the new one. |
-| Ctrl-A c, then one line at the prompt | Back to the console. `sudo date -u -s @<now>; sudo hwclock --systohc; stty rows R cols C; clear` puts right what the guest has wrong: its clock stood still while the VM was stopped (and `loadvm` turns it back to the checkpoint), `loadvm` turns the tty size back too, and `clear` removes the monitor's text. |
+| Ctrl-A NUL, Ctrl-A c, then one line at the prompt | Back to the console. `sudo date -u -s @<now>; sudo hwclock --systohc; stty rows R cols C; clear` puts right what the guest has wrong: its clock stood still while the VM was stopped (and `loadvm` turns it back to the checkpoint), `loadvm` turns the tty size back too, and `clear` removes the monitor's text. The page reports only once `clear`'s erase is in the console record and a prompt has followed it: when the checkpoint caught bash between two prompts, a stale prompt arrives first and the line runs seconds later. |
 
 Going back is blur, Ctrl-A c, `stop`, `loadvm bashtion`, `cont`, Ctrl-A c, then the same line
-at the prompt. If `loadvm` fails or never answers, the page does **not** `cont`: after a partial
-load the disks and memory may not match, and a machine running on that can corrupt the work
-you would then download. It switches back, leaves the VM stopped, and says to reload. Whatever
-happens, the page leaves the mux on the serial side and gives the keyboard back.
+at the prompt. Before that line the page also puts back the terminal modes a running program
+may have left in xterm, which `loadvm` cannot reach: the cursor `top` hid, colours, application
+cursor keys and keypad, and mouse and focus reporting. If `loadvm` fails or never answers, the
+page does **not** `cont`: after a partial load the disks and memory may not match, and a
+machine running on that can corrupt the work you would then download. It switches back, leaves
+the VM stopped, and says to reload, in the overlay and on the status line. Whatever happens, the
+page leaves the mux on the serial side and gives the keyboard back.
 
 **It lives only in the tab.** The snapshot is inside that qcow2 layer, in the engine's
 in-memory filesystem next to the disks. A reload or a closed tab loses it. Keeping state across
@@ -212,8 +215,9 @@ work** is the copy that lasts.
 
 **What it costs**, measured on the served page: `info snapshots` gave a VM SIZE of 299 MiB for
 the first checkpoint after a restore and 321 MiB later in a session, about the guest's RAM in
-use. On top of that comes every root-disk cluster written after the first checkpoint, and a
-brief second copy of the layer while MEMFS grows it. One slot keeps that bounded.
+use. On top of that comes every root-disk cluster written after the first checkpoint, every
+`/dev/vdb` cluster overwritten while a checkpoint still holds the old one (qcow2 keeps both), and
+a brief second copy of a disk file while MEMFS grows it. One slot keeps that bounded.
 
 **How long it takes**, measured on the served page: in the monitor, `snapshot_blkdev` took
 ~20 ms, `savevm` 0.4-0.7 s and `loadvm` ~0.5 s. A whole save, click to tick, takes ~25 s (25.2
@@ -245,8 +249,8 @@ in the browser mounts the share: it is `noauto` in the image's `/etc/fstab`.
   machine, but only inside the tab.
 - **A checkpoint lasts only as long as the tab, and costs memory.** It is held in the page's
   memory: a reload or a closed tab loses it, and it takes about as much as the guest's RAM in
-  use (~300 MiB), plus every root-disk cluster written since the first checkpoint. See
-  "Checkpoints".
+  use (~300 MiB), plus every root-disk cluster written since the first checkpoint and every
+  `/dev/vdb` cluster overwritten since the last one. See "Checkpoints".
 - **`/dev/vdb` is practice space, not storage.** It is 4 GiB on paper, but it is a qcow2 image
   held in the page's memory, and it grows there as the guest writes to it: writing gigabytes to
   it can run the tab out of memory, taking any unsaved work with it.
@@ -327,7 +331,8 @@ stack (fork JIT engine, CI artifacts, page served locally):
 - Checkpoints proven (#65): **Save checkpoint ~25 s, Go back to checkpoint ~25-28 s**, about
   1-1.6 s of it in the monitor. Going back undid a deleted file, a new user, an installed
   package, an LVM PV on `/dev/vdb` and a changed terminal size, twice, including from a
-  terminal held by `sleep 600` with bracketed paste on.
+  terminal held by `sleep 600` with bracketed paste on, from `yes` flooding the console, and
+  from `top` (the cursor comes back).
 - Boot banner verified to hide all boot output and reveal a clean prompt.
 
 ## Licence
